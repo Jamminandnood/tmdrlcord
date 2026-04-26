@@ -4,5 +4,18 @@
     "passwordHash": "52ac4fd7f04ce00848e67066acc4e58f3a6a331b0fdafce49cc6e3bb28e4e00ed75bb02c09d321129f88c16c8dce36c50dbc3759b84c399a07292c1075490794",
     "salt": "03e35b0b54020982aa63565c5e8cb76d",
     "createdAt": 1777187667059
+  },
+  {
+    "username": "김경은",
+    "passwordHash": "8360b46a7193d6be4332682500745358a5ec501f71bab610d5407a59e94fab69e31498d073418fe02740ff9cf49fbd60b76248b7180b39ddee4af700798cc029",
+    "salt": "c0fa9ab00707151de90cc241c0461d70",
+    "createdAt": 1777187715340
+  },
+  {
+    "username": "admin",
+    "passwordHash": "0790a58f3b4ed17cdea6c5a8d44aaf1932c6d55359884257e1fe59365a3764172a20c90330e190809a3ab823812493a428f152a991b816ad794f34dc65af97e7",
+    "salt": "ee38d286d3f5a46323f6abe6e2d6bbf6",
+    "createdAt": 1777187799144,
+    "isAdmin": true
   }
 ]

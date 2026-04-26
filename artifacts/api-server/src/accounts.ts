@@ -8,6 +8,7 @@ type Account = {
   passwordHash: string;
   salt: string;
   createdAt: number;
+  isAdmin?: boolean;
 };
 
 export type AuthResult =
@@ -140,4 +141,39 @@ export function verifyToken(token: string | undefined | null): string | null {
 
 export function isUsernameTaken(username: string): boolean {
   return accounts.has(username.toLowerCase());
+}
+
+export function isAdminUsername(username: string): boolean {
+  const account = accounts.get(username.toLowerCase());
+  return Boolean(account?.isAdmin);
+}
+
+export async function seedAdminAccount(
+  username: string,
+  password: string,
+): Promise<void> {
+  await load();
+  const key = username.toLowerCase();
+  const existing = accounts.get(key);
+  const salt = existing?.salt ?? crypto.randomBytes(16).toString("hex");
+  const passwordHash = hashPassword(password, salt);
+
+  if (existing && existing.passwordHash === passwordHash && existing.isAdmin) {
+    return;
+  }
+
+  const account: Account = {
+    username,
+    passwordHash,
+    salt,
+    createdAt: existing?.createdAt ?? Date.now(),
+    isAdmin: true,
+  };
+  accounts.set(key, account);
+  try {
+    await persist();
+    logger.info({ username }, "admin account seeded");
+  } catch (err) {
+    logger.error({ err }, "failed to persist admin account");
+  }
 }
