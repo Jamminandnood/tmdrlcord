@@ -16,21 +16,78 @@
       <div class="login-card">
         <div class="login-logo">RC</div>
         <h1>Realtime Chat</h1>
-        <p class="login-sub">닉네임을 입력하고 입장하세요.</p>
-        <form id="loginForm">
+        <p class="login-sub">로그인하거나 익명으로 입장하세요.</p>
+
+        <div class="auth-tabs">
+          <button type="button" class="auth-tab active" data-tab="login">
+            로그인
+          </button>
+          <button type="button" class="auth-tab" data-tab="register">
+            회원가입
+          </button>
+          <button type="button" class="auth-tab" data-tab="anon">
+            익명
+          </button>
+        </div>
+
+        <!-- Login -->
+        <form id="loginForm" class="auth-pane active" data-pane="login">
           <input
             type="text"
-            id="nicknameInput"
-            placeholder="닉네임 (최대 20자)"
+            id="loginUsername"
+            placeholder="닉네임"
             maxlength="20"
-            autocomplete="off"
+            autocomplete="username"
           />
-          <button type="submit" class="primary">입장하기</button>
-          <button type="button" id="anonymousBtn" class="ghost">
+          <input
+            type="password"
+            id="loginPassword"
+            placeholder="비밀번호"
+            maxlength="100"
+            autocomplete="current-password"
+          />
+          <button type="submit" class="primary">로그인</button>
+        </form>
+
+        <!-- Register -->
+        <form id="registerForm" class="auth-pane" data-pane="register">
+          <input
+            type="text"
+            id="registerUsername"
+            placeholder="닉네임 (2~20자, 글자/숫자/_-.)"
+            maxlength="20"
+            autocomplete="username"
+          />
+          <input
+            type="password"
+            id="registerPassword"
+            placeholder="비밀번호 (4자 이상)"
+            maxlength="100"
+            autocomplete="new-password"
+          />
+          <input
+            type="password"
+            id="registerPasswordConfirm"
+            placeholder="비밀번호 확인"
+            maxlength="100"
+            autocomplete="new-password"
+          />
+          <button type="submit" class="primary">회원가입 후 입장</button>
+        </form>
+
+        <!-- Anonymous -->
+        <div class="auth-pane" data-pane="anon">
+          <p class="anon-note">
+            익명으로 입장하면 닉네임이 IP 주소를 기반으로 자동 생성돼요.
+            <br />
+            (예: 익명(203.0.113.42))
+          </p>
+          <button id="anonymousBtn" type="button" class="primary">
             익명으로 입장
           </button>
-          <div id="loginError" class="login-error"></div>
-        </form>
+        </div>
+
+        <div id="loginError" class="login-error"></div>
       </div>
     </div>
 
@@ -69,9 +126,10 @@
           <div class="me-info">
             <div class="me-nick" id="meNick">-</div>
             <div class="me-status">
-              <span class="status-dot"></span> 온라인
+              <span class="status-dot"></span> <span id="meStatus">온라인</span>
             </div>
           </div>
+          <button id="logoutBtn" class="logout-btn" title="로그아웃">⏻</button>
         </div>
       </aside>
 

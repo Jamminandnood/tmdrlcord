@@ -89,13 +89,46 @@ body {
   font-size: 14px;
 }
 
-#loginForm {
+.auth-tabs {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  gap: 4px;
+  background: var(--bg-input);
+  padding: 4px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
 }
 
-#loginForm input {
+.auth-tab {
+  flex: 1;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 8px 4px;
+  font-weight: 600;
+  border-radius: 6px;
+}
+
+.auth-tab:hover {
+  color: var(--text-primary);
+}
+
+.auth-tab.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.auth-pane {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+}
+
+.auth-pane.active {
+  display: flex;
+}
+
+.auth-pane input {
   padding: 12px 14px;
   background: var(--bg-input);
   border: 1px solid transparent;
@@ -106,8 +139,16 @@ body {
   transition: border-color 0.15s ease;
 }
 
-#loginForm input:focus {
+.auth-pane input:focus {
   border-color: var(--accent);
+}
+
+.anon-note {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 6px;
+  text-align: center;
 }
 
 button {
@@ -317,6 +358,20 @@ button:active {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  flex: 1;
+}
+
+.logout-btn {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 18px;
+  padding: 6px 9px;
+  border-radius: 6px;
+}
+
+.logout-btn:hover {
+  background: var(--bg-hover);
+  color: var(--red);
 }
 
 .me-nick {

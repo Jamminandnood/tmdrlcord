@@ -1,0 +1,8 @@
+[
+  {
+    "username": "테스터",
+    "passwordHash": "52ac4fd7f04ce00848e67066acc4e58f3a6a331b0fdafce49cc6e3bb28e4e00ed75bb02c09d321129f88c16c8dce36c50dbc3759b84c399a07292c1075490794",
+    "salt": "03e35b0b54020982aa63565c5e8cb76d",
+    "createdAt": 1777187667059
+  }
+]

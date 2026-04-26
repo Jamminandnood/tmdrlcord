@@ -15,12 +15,15 @@
     "#16a085",
   ];
 
+  const TOKEN_KEY = "rc:token";
+  const USERNAME_KEY = "rc:username";
+
   const state = {
     socket: null,
     me: null,
     users: [],
     activeChannel: { type: "global", id: "global", name: "전체 채팅방" },
-    messages: { global: [] }, // global + dm:userId => [messages]
+    messages: { global: [] },
     unread: {},
     notifyEnabled: false,
     silentMode: false,
@@ -31,6 +34,10 @@
 
   function $(selector) {
     return document.querySelector(selector);
+  }
+
+  function $$(selector) {
+    return Array.from(document.querySelectorAll(selector));
   }
 
   function colorFromName(name) {
@@ -78,6 +85,28 @@
     return state.messages[key];
   }
 
+  function getStoredToken() {
+    try {
+      return localStorage.getItem(TOKEN_KEY) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function storeToken(token, username) {
+    try {
+      if (token) {
+        localStorage.setItem(TOKEN_KEY, token);
+        if (username) localStorage.setItem(USERNAME_KEY, username);
+      } else {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USERNAME_KEY);
+      }
+    } catch (_) {
+      // ignore
+    }
+  }
+
   // ===== Notifications =====
 
   function loadPrefs() {
@@ -87,7 +116,7 @@
       state.notifyEnabled = n === "1";
       state.silentMode = s === "1";
     } catch (_) {
-      // ignore storage errors
+      // ignore
     }
   }
 
@@ -134,13 +163,11 @@
       return;
     }
     if (state.notifyEnabled) {
-      // User is opting out — turn off
       state.notifyEnabled = false;
       savePrefs();
       updateNotifyButton();
       return;
     }
-    // Try to enable
     let permission = Notification.permission;
     if (permission === "default") {
       permission = await Notification.requestPermission();
@@ -171,7 +198,6 @@
       return;
     }
     try {
-      // The silent flag is what the user requested as "무음 모드"
       const n = new Notification(title, {
         body,
         silent: state.silentMode,
@@ -354,6 +380,31 @@
     return wrap;
   }
 
+  function loadHistory(historyItems) {
+    const bucket = ensureBucket("global");
+    bucket.length = 0;
+    if (Array.isArray(historyItems)) {
+      historyItems.forEach((entry) => {
+        if (entry.kind === "system") {
+          bucket.push({
+            kind: "system",
+            text: entry.message.text,
+            timestamp: entry.message.timestamp,
+          });
+        } else if (entry.kind === "public") {
+          const msg = entry.message;
+          bucket.push({
+            kind: "public",
+            author: msg.user.nickname,
+            authorId: msg.user.id,
+            text: msg.text,
+            timestamp: msg.timestamp,
+          });
+        }
+      });
+    }
+  }
+
   // ===== Channel switching =====
 
   function openGlobal() {
@@ -459,11 +510,10 @@
       }
 
       if (!msg.silent) {
-        showBrowserNotification(
-          "DM · " + msg.fromNickname,
-          msg.text,
-          { tag: key, skipIfFocused: false },
-        );
+        showBrowserNotification("DM · " + msg.fromNickname, msg.text, {
+          tag: key,
+          skipIfFocused: false,
+        });
       }
     });
 
@@ -492,14 +542,36 @@
     });
   }
 
-  function register(nickname, anonymous) {
+  function ensureSocketReady() {
+    if (!state.socket) setupSocket();
+    if (state.socket.connected) return Promise.resolve();
     return new Promise((resolve) => {
-      state.socket.emit(
-        "register",
-        { nickname, anonymous },
-        (response) => resolve(response),
-      );
+      const t = setTimeout(() => resolve(), 4000);
+      state.socket.once("connect", () => {
+        clearTimeout(t);
+        resolve();
+      });
     });
+  }
+
+  function socketRegister(payload) {
+    return new Promise((resolve) => {
+      state.socket.emit("register", payload, (response) => resolve(response));
+    });
+  }
+
+  // ===== Auth API =====
+
+  async function apiPost(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      return { ok: false, error: "서버 오류 (" + res.status + ")" };
+    }
+    return res.json();
   }
 
   // ===== Sending =====
@@ -508,13 +580,9 @@
     if (!text.trim()) return;
     const silent = state.silentMode;
     if (state.activeChannel.type === "global") {
-      state.socket.emit(
-        "message:public",
-        { text, silent },
-        (resp) => {
-          if (!resp || !resp.ok) console.warn("send failed", resp);
-        },
-      );
+      state.socket.emit("message:public", { text, silent }, (resp) => {
+        if (!resp || !resp.ok) console.warn("send failed", resp);
+      });
     } else {
       const targetId = state.activeChannel.id;
       const targetName = state.activeChannel.name;
@@ -523,7 +591,6 @@
         { toId: targetId, text, silent },
         (resp) => {
           if (resp && resp.ok && state.me) {
-            // Show our own outgoing DM locally (server only echoes to recipient)
             const item = {
               kind: "private-outgoing",
               author: state.me.nickname,
@@ -537,7 +604,6 @@
               "DM 전송에 실패했습니다: " +
                 ((resp && resp.error) || "알 수 없는 오류"),
             );
-            // If recipient disconnected, fall back to global
             if (!state.users.find((u) => u.id === targetId)) {
               alert(targetName + " 님이 오프라인입니다.");
               openGlobal();
@@ -548,70 +614,142 @@
     }
   }
 
+  // ===== Entry flows =====
+
+  async function enterAsAccount(token) {
+    await ensureSocketReady();
+    const resp = await socketRegister({ mode: "account", token });
+    return resp;
+  }
+
+  async function enterAsAnonymous() {
+    await ensureSocketReady();
+    const resp = await socketRegister({ mode: "anonymous" });
+    return resp;
+  }
+
+  function showApp(resp, isAuthenticated) {
+    state.me = resp.user;
+    state.users = resp.users || [];
+    loadHistory(resp.history || []);
+
+    $("#meNick").textContent = state.me.nickname;
+    const meAv = $("#meAvatar");
+    meAv.textContent = initials(state.me.nickname);
+    meAv.style.background = colorFromName(state.me.nickname);
+    $("#meStatus").textContent = isAuthenticated ? "로그인됨" : "익명";
+
+    $("#loginOverlay").classList.add("hidden");
+    $("#app").classList.remove("hidden");
+
+    openGlobal();
+  }
+
+  function logout() {
+    storeToken(null);
+    if (state.socket) {
+      try {
+        state.socket.disconnect();
+      } catch (_) {
+        // ignore
+      }
+      state.socket = null;
+    }
+    state.me = null;
+    state.users = [];
+    state.messages = { global: [] };
+    state.unread = {};
+    $("#app").classList.add("hidden");
+    $("#loginOverlay").classList.remove("hidden");
+    $("#loginError").textContent = "";
+  }
+
   // ===== Wiring =====
+
+  function bindAuthTabs() {
+    const tabs = $$(".auth-tab");
+    const panes = $$(".auth-pane");
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const which = tab.dataset.tab;
+        tabs.forEach((t) => t.classList.toggle("active", t === tab));
+        panes.forEach((p) =>
+          p.classList.toggle("active", p.dataset.pane === which),
+        );
+        $("#loginError").textContent = "";
+      });
+    });
+  }
 
   function bindUi() {
     loadPrefs();
     updateNotifyButton();
     updateSilentButton();
+    bindAuthTabs();
 
     $("#notifyToggle").addEventListener("click", toggleNotifications);
     $("#silentToggle").addEventListener("click", toggleSilent);
     $("#leaveDmBtn").addEventListener("click", openGlobal);
     $("#channelGlobal").addEventListener("click", openGlobal);
+    $("#logoutBtn").addEventListener("click", logout);
 
-    const loginForm = $("#loginForm");
-    const nickInput = $("#nicknameInput");
-    const anonBtn = $("#anonymousBtn");
     const loginErr = $("#loginError");
 
-    async function performRegister(nickname, anonymous) {
-      loginErr.textContent = "";
-      if (!state.socket) setupSocket();
-
-      // wait briefly for socket to connect if needed
-      if (!state.socket.connected) {
-        await new Promise((resolve) => {
-          if (state.socket.connected) return resolve();
-          const t = setTimeout(() => resolve(), 4000);
-          state.socket.once("connect", () => {
-            clearTimeout(t);
-            resolve();
-          });
-        });
-      }
-
-      const resp = await register(nickname, anonymous);
-      if (!resp || !resp.ok) {
-        loginErr.textContent = (resp && resp.error) || "입장에 실패했습니다.";
-        return;
-      }
-      state.me = resp.user;
-      state.users = resp.users || [];
-      $("#meNick").textContent = state.me.nickname;
-      const meAv = $("#meAvatar");
-      meAv.textContent = initials(state.me.nickname);
-      meAv.style.background = colorFromName(state.me.nickname);
-
-      $("#loginOverlay").classList.add("hidden");
-      $("#app").classList.remove("hidden");
-
-      openGlobal();
-    }
-
-    loginForm.addEventListener("submit", (e) => {
+    $("#loginForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const value = nickInput.value.trim();
-      if (!value) {
-        loginErr.textContent =
-          "닉네임을 입력하거나 '익명으로 입장' 버튼을 누르세요.";
+      loginErr.textContent = "";
+      const username = $("#loginUsername").value.trim();
+      const password = $("#loginPassword").value;
+      if (!username || !password) {
+        loginErr.textContent = "닉네임과 비밀번호를 모두 입력해주세요.";
         return;
       }
-      performRegister(value, false);
+      const res = await apiPost("/api/auth/login", { username, password });
+      if (!res.ok) {
+        loginErr.textContent = res.error || "로그인 실패";
+        return;
+      }
+      storeToken(res.token, res.username);
+      const reg = await enterAsAccount(res.token);
+      if (!reg || !reg.ok) {
+        loginErr.textContent = (reg && reg.error) || "입장 실패";
+        return;
+      }
+      showApp(reg, true);
     });
 
-    anonBtn.addEventListener("click", () => {
-      performRegister("", true);
+    $("#registerForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      loginErr.textContent = "";
+      const username = $("#registerUsername").value.trim();
+      const password = $("#registerPassword").value;
+      const confirm = $("#registerPasswordConfirm").value;
+      if (password !== confirm) {
+        loginErr.textContent = "비밀번호가 일치하지 않습니다.";
+        return;
+      }
+      const res = await apiPost("/api/auth/register", { username, password });
+      if (!res.ok) {
+        loginErr.textContent = res.error || "회원가입 실패";
+        return;
+      }
+      storeToken(res.token, res.username);
+      const reg = await enterAsAccount(res.token);
+      if (!reg || !reg.ok) {
+        loginErr.textContent = (reg && reg.error) || "입장 실패";
+        return;
+      }
+      showApp(reg, true);
+    });
+
+    $("#anonymousBtn").addEventListener("click", async () => {
+      loginErr.textContent = "";
+      const reg = await enterAsAnonymous();
+      if (!reg || !reg.ok) {
+        loginErr.textContent = (reg && reg.error) || "입장 실패";
+        return;
+      }
+      showApp(reg, false);
     });
 
     // Composer
@@ -647,8 +785,20 @@
       }
     });
 
-    // Pre-create socket so the connection happens before login completes
     setupSocket();
+
+    // Auto-login if a token exists
+    const token = getStoredToken();
+    if (token) {
+      enterAsAccount(token).then((reg) => {
+        if (reg && reg.ok) {
+          showApp(reg, true);
+        } else {
+          // Token invalid (e.g. server restarted) — clear it
+          storeToken(null);
+        }
+      });
+    }
   }
 
   document.addEventListener("DOMContentLoaded", bindUi);
