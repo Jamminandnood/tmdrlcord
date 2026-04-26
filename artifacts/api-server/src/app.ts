@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import express, { type Express } from "express";
+import express, { type Express, type Request, type Response } from "express"; // Request, Response 추가
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
@@ -15,14 +15,15 @@ app.use(
   pinoHttp({
     logger,
     serializers: {
-      req(req) {
+      // req와 res에 타입을 명시해줍니다 (any를 써서 검사를 피함)
+      req(req: any) {
         return {
           id: req.id,
           method: req.method,
           url: req.url?.split("?")[0],
         };
       },
-      res(res) {
+      res(res: any) {
         return {
           statusCode: res.statusCode,
         };
@@ -30,6 +31,7 @@ app.use(
     },
   }),
 );
+
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -39,7 +41,8 @@ app.use("/api", router);
 const publicDir = path.resolve(__dirname, "public");
 app.use(express.static(publicDir));
 
-app.get(/^\/(?!api|socket\.io).*/, (_req, res) => {
+// _req와 res에도 타입을 명시해줍니다
+app.get(/^\/(?!api|socket\.io).*/, (_req: Request, res: Response) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });
 
