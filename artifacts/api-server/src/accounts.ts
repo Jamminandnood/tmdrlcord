@@ -20,6 +20,7 @@ const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
 
 const accounts = new Map<string, Account>();
 const tokens = new Map<string, string>();
+const reservedUsernames = new Set<string>();
 
 let loadPromise: Promise<void> | null = null;
 
@@ -87,7 +88,7 @@ export async function registerAccount(
   if (pwErr) return { ok: false, error: pwErr };
 
   const key = u.toLowerCase();
-  if (accounts.has(key)) {
+  if (accounts.has(key) || reservedUsernames.has(key)) {
     return { ok: false, error: "이미 사용 중인 닉네임입니다." };
   }
 
@@ -152,8 +153,10 @@ export async function seedAdminAccount(
   username: string,
   password: string,
 ): Promise<void> {
-  await load();
   const key = username.toLowerCase();
+  reservedUsernames.add(key);
+
+  await load();
   const existing = accounts.get(key);
   const salt = existing?.salt ?? crypto.randomBytes(16).toString("hex");
   const passwordHash = hashPassword(password, salt);
