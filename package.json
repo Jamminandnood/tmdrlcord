@@ -2,12 +2,12 @@
   "name": "workspace",
   "version": "0.0.0",
   "license": "MIT",
-  "scripts": {
-    "build": "vite build",
-    "preinstall": "...",
-    "typecheck": "echo 'skipped'"
-  },
   "private": true,
+  "scripts": {
+    "preinstall": "echo 'Installing...'",
+    "build": "pnpm -r --if-present run build",
+    "typecheck": "echo 'Skipping typecheck...'"
+  },
   "devDependencies": {
     "typescript": "~5.9.2",
     "prettier": "^3.8.1"
