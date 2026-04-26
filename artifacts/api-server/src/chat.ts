@@ -1,21 +1,25 @@
 import type http from "node:http";
 import { Server as SocketIOServer, type Socket } from "socket.io";
 import { logger } from "./lib/logger";
-import { isUsernameTaken, verifyToken } from "./accounts";
+import { isAdminUsername, isUsernameTaken, verifyToken } from "./accounts";
 
 type User = {
   id: string;
   nickname: string;
   isAnonymous: boolean;
   isAuthenticated: boolean;
+  isAdmin: boolean;
 };
 
 type PublicMessage = {
   id: string;
   user: User;
   text: string;
+  imageUrl?: string;
   timestamp: number;
   silent?: boolean;
+  deleted?: boolean;
+  deletedBy?: string;
 };
 
 type SystemMessage = {
@@ -34,6 +38,7 @@ type PrivateMessage = {
   fromNickname: string;
   toId: string;
   text: string;
+  imageUrl?: string;
   timestamp: number;
   silent?: boolean;
 };
@@ -50,9 +55,10 @@ function pushHistory(item: HistoryItem): void {
 }
 
 function listUsers(): User[] {
-  return Array.from(users.values()).sort((a, b) =>
-    a.nickname.localeCompare(b.nickname),
-  );
+  return Array.from(users.values()).sort((a, b) => {
+    if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1;
+    return a.nickname.localeCompare(b.nickname);
+  });
 }
 
 function makeId(): string {
@@ -62,6 +68,15 @@ function makeId(): string {
 function sanitizeText(raw: unknown): string {
   if (typeof raw !== "string") return "";
   return raw.trim().slice(0, 2000);
+}
+
+function sanitizeImageUrl(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.startsWith("/objects/")) return undefined;
+  if (trimmed.length > 500) return undefined;
+  return trimmed;
 }
 
 function getClientIp(socket: Socket): string {
@@ -77,13 +92,17 @@ function getClientIp(socket: Socket): string {
 }
 
 function buildAnonymousNickname(ip: string): string {
-  const safe = ip && ip !== "unknown" ? ip : `손님${Math.floor(1000 + Math.random() * 9000)}`;
+  const safe =
+    ip && ip !== "unknown"
+      ? ip
+      : `손님${Math.floor(1000 + Math.random() * 9000)}`;
   return `익명(${safe})`;
 }
 
 export function attachChatServer(server: http.Server): SocketIOServer {
   const io = new SocketIOServer(server, {
     cors: { origin: "*" },
+    maxHttpBufferSize: 1e6,
   });
 
   io.on("connection", (socket: Socket) => {
@@ -112,6 +131,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
         let nickname = "";
         let isAuthenticated = false;
         let isAnonymous = false;
+        let isAdmin = false;
 
         if (mode === "account") {
           const username = verifyToken(payload?.token);
@@ -124,6 +144,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           }
           nickname = username;
           isAuthenticated = true;
+          isAdmin = isAdminUsername(username);
         } else {
           const ip = getClientIp(socket);
           nickname = buildAnonymousNickname(ip);
@@ -144,13 +165,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           nickname = `${nickname}#${Math.floor(100 + Math.random() * 900)}`;
         }
 
-        if (
-          isAnonymous &&
-          isUsernameTaken(nickname) &&
-          // anonymous IP-style names won't collide with usernames
-          // (parens disallowed), but be defensive
-          !/^익명\(/.test(nickname)
-        ) {
+        if (isAnonymous && isUsernameTaken(nickname)) {
           nickname = `${nickname}#${Math.floor(100 + Math.random() * 900)}`;
         }
 
@@ -159,6 +174,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           nickname,
           isAnonymous,
           isAuthenticated,
+          isAdmin,
         };
         users.set(socket.id, user);
         registered = true;
@@ -174,7 +190,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
 
         const sysMsg: SystemMessage = {
           id: makeId(),
-          text: `${nickname} 님이 입장했습니다.`,
+          text: `${nickname}${isAdmin ? " (관리자)" : ""} 님이 입장했습니다.`,
           timestamp: Date.now(),
         };
         pushHistory({ kind: "system", message: sysMsg });
@@ -182,14 +198,16 @@ export function attachChatServer(server: http.Server): SocketIOServer {
 
         io.emit("users", listUsers());
 
-        logger.info({ id: socket.id, nickname, mode }, "user registered");
+        logger.info({ id: socket.id, nickname, mode, isAdmin }, "user registered");
       },
     );
 
     socket.on(
       "message:public",
       (
-        payload: { text?: string; silent?: boolean } | undefined,
+        payload:
+          | { text?: string; imageUrl?: string; silent?: boolean }
+          | undefined,
         ack?: (response: { ok: boolean; error?: string }) => void,
       ) => {
         const user = users.get(socket.id);
@@ -198,7 +216,8 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           return;
         }
         const text = sanitizeText(payload?.text);
-        if (!text) {
+        const imageUrl = sanitizeImageUrl(payload?.imageUrl);
+        if (!text && !imageUrl) {
           ack?.({ ok: false, error: "메시지를 입력해주세요." });
           return;
         }
@@ -206,6 +225,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           id: makeId(),
           user,
           text,
+          ...(imageUrl ? { imageUrl } : {}),
           timestamp: Date.now(),
           silent: Boolean(payload?.silent),
         };
@@ -219,7 +239,12 @@ export function attachChatServer(server: http.Server): SocketIOServer {
       "message:private",
       (
         payload:
-          | { toId?: string; text?: string; silent?: boolean }
+          | {
+              toId?: string;
+              text?: string;
+              imageUrl?: string;
+              silent?: boolean;
+            }
           | undefined,
         ack?: (response: {
           ok: boolean;
@@ -234,6 +259,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
         }
         const toId = typeof payload?.toId === "string" ? payload.toId : "";
         const text = sanitizeText(payload?.text);
+        const imageUrl = sanitizeImageUrl(payload?.imageUrl);
         if (!toId || !users.has(toId)) {
           ack?.({ ok: false, error: "받는 사용자를 찾을 수 없습니다." });
           return;
@@ -242,7 +268,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           ack?.({ ok: false, error: "자기 자신에게는 보낼 수 없습니다." });
           return;
         }
-        if (!text) {
+        if (!text && !imageUrl) {
           ack?.({ ok: false, error: "메시지를 입력해주세요." });
           return;
         }
@@ -252,11 +278,57 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           fromNickname: user.nickname,
           toId,
           text,
+          ...(imageUrl ? { imageUrl } : {}),
           timestamp: Date.now(),
           silent: Boolean(payload?.silent),
         };
         io.to(toId).emit("message:private", msg);
         ack?.({ ok: true, message: msg });
+      },
+    );
+
+    socket.on(
+      "message:delete",
+      (
+        payload: { messageId?: string } | undefined,
+        ack?: (response: { ok: boolean; error?: string }) => void,
+      ) => {
+        const user = users.get(socket.id);
+        if (!user) {
+          ack?.({ ok: false, error: "먼저 입장해주세요." });
+          return;
+        }
+        if (!user.isAdmin) {
+          ack?.({ ok: false, error: "관리자만 메시지를 삭제할 수 있습니다." });
+          return;
+        }
+        const messageId =
+          typeof payload?.messageId === "string" ? payload.messageId : "";
+        if (!messageId) {
+          ack?.({ ok: false, error: "messageId가 필요합니다." });
+          return;
+        }
+        const entry = history.find(
+          (h) => h.kind === "public" && h.message.id === messageId,
+        );
+        if (!entry || entry.kind !== "public") {
+          ack?.({ ok: false, error: "메시지를 찾을 수 없습니다." });
+          return;
+        }
+        entry.message.deleted = true;
+        entry.message.deletedBy = user.nickname;
+        entry.message.text = "";
+        delete entry.message.imageUrl;
+
+        io.to("global").emit("message:deleted", {
+          id: messageId,
+          deletedBy: user.nickname,
+        });
+        ack?.({ ok: true });
+        logger.info(
+          { messageId, by: user.nickname },
+          "message deleted by admin",
+        );
       },
     );
 

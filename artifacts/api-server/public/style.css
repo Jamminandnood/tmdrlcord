@@ -605,9 +605,10 @@ button:active {
   gap: 8px;
   padding: 12px 18px 18px;
   background: var(--bg-chat);
+  align-items: center;
 }
 
-.composer input {
+.composer input[type="text"] {
   flex: 1;
   padding: 12px 16px;
   background: var(--bg-input);
@@ -622,14 +623,171 @@ button:active {
   color: var(--text-muted);
 }
 
+.attach-btn {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 18px;
+  padding: 0;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.attach-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.attach-btn.has-file {
+  background: var(--accent);
+  color: white;
+}
+
 .send-btn {
   background: var(--accent);
   color: white;
   padding: 0 18px;
+  height: 42px;
 }
 
 .send-btn:hover {
   background: var(--accent-hover);
+}
+
+.send-btn:disabled {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* ----- Image preview / message images ----- */
+
+.image-preview {
+  margin: 0 18px 8px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 280px;
+}
+
+.image-preview img {
+  max-width: 100%;
+  max-height: 160px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.image-preview-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ghost-icon {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 4px;
+}
+
+.ghost-icon:hover {
+  background: var(--bg-hover);
+  color: var(--red);
+}
+
+.message-image {
+  margin-top: 6px;
+  max-width: 360px;
+  max-height: 320px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: block;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+}
+
+.message-image:hover {
+  opacity: 0.92;
+}
+
+.message-deleted {
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.message {
+  position: relative;
+}
+
+.message-actions {
+  position: absolute;
+  top: -8px;
+  right: 0;
+  display: none;
+  gap: 4px;
+  background: var(--bg-deepest);
+  padding: 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.message:hover .message-actions {
+  display: flex;
+}
+
+.msg-action-btn {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.msg-action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--red);
+}
+
+.admin-badge {
+  background: var(--accent);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  margin-left: 4px;
+}
+
+/* ----- Image lightbox ----- */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  cursor: zoom-out;
+}
+
+.lightbox img {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
 
 /* ----- Responsive ----- */

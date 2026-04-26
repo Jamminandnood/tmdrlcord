@@ -17,6 +17,7 @@
 
   const TOKEN_KEY = "rc:token";
   const USERNAME_KEY = "rc:username";
+  const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
   const state = {
     socket: null,
@@ -28,17 +29,14 @@
     notifyEnabled: false,
     silentMode: false,
     typingTimers: new Map(),
+    pendingFile: null,
+    pendingPreviewUrl: null,
   };
 
   // ===== Utility =====
 
-  function $(selector) {
-    return document.querySelector(selector);
-  }
-
-  function $$(selector) {
-    return Array.from(document.querySelectorAll(selector));
-  }
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => Array.from(document.querySelectorAll(s));
 
   function colorFromName(name) {
     let hash = 0;
@@ -55,8 +53,7 @@
   }
 
   function formatTime(ts) {
-    const d = new Date(ts);
-    return d.toLocaleTimeString("ko-KR", {
+    return new Date(ts).toLocaleTimeString("ko-KR", {
       hour: "2-digit",
       minute: "2-digit",
     });
@@ -107,14 +104,17 @@
     }
   }
 
+  function imageSrcFromObjectPath(objectPath) {
+    if (!objectPath) return "";
+    return "/api/storage" + objectPath;
+  }
+
   // ===== Notifications =====
 
   function loadPrefs() {
     try {
-      const n = localStorage.getItem("notifyEnabled");
-      const s = localStorage.getItem("silentMode");
-      state.notifyEnabled = n === "1";
-      state.silentMode = s === "1";
+      state.notifyEnabled = localStorage.getItem("notifyEnabled") === "1";
+      state.silentMode = localStorage.getItem("silentMode") === "1";
     } catch (_) {
       // ignore
     }
@@ -132,29 +132,17 @@
   function updateNotifyButton() {
     const btn = $("#notifyToggle");
     const label = $("#notifyLabel");
-    if (state.notifyEnabled) {
-      btn.classList.add("on");
-      btn.classList.remove("off");
-      label.textContent = "켜짐";
-    } else {
-      btn.classList.add("off");
-      btn.classList.remove("on");
-      label.textContent = "꺼짐";
-    }
+    btn.classList.toggle("on", state.notifyEnabled);
+    btn.classList.toggle("off", !state.notifyEnabled);
+    label.textContent = state.notifyEnabled ? "켜짐" : "꺼짐";
   }
 
   function updateSilentButton() {
     const btn = $("#silentToggle");
     const label = $("#silentLabel");
-    if (state.silentMode) {
-      btn.classList.add("on");
-      btn.classList.remove("off");
-      label.textContent = "켜짐";
-    } else {
-      btn.classList.add("off");
-      btn.classList.remove("on");
-      label.textContent = "꺼짐";
-    }
+    btn.classList.toggle("on", state.silentMode);
+    btn.classList.toggle("off", !state.silentMode);
+    label.textContent = state.silentMode ? "켜짐" : "꺼짐";
   }
 
   async function toggleNotifications() {
@@ -221,12 +209,9 @@
     const me = state.users.find((u) => u.id === meId);
 
     $("#userCount").textContent = state.users.length;
-
     list.innerHTML = "";
 
-    if (me) {
-      list.appendChild(buildUserRow(me, true));
-    }
+    if (me) list.appendChild(buildUserRow(me, true));
     others.forEach((u) => list.appendChild(buildUserRow(u, false)));
   }
 
@@ -252,6 +237,13 @@
 
     row.appendChild(avatar);
     row.appendChild(name);
+
+    if (user.isAdmin) {
+      const badge = document.createElement("span");
+      badge.className = "admin-badge";
+      badge.textContent = "ADMIN";
+      row.appendChild(badge);
+    }
 
     if (isSelf) {
       const tag = document.createElement("span");
@@ -325,10 +317,20 @@
       const container = $("#messages");
       const empty = container.querySelector(".empty-state");
       if (empty) container.removeChild(empty);
-      const node = buildMessageNode(message);
-      container.appendChild(node);
+      container.appendChild(buildMessageNode(message));
       container.scrollTop = container.scrollHeight;
     }
+  }
+
+  function openLightbox(src) {
+    const box = document.createElement("div");
+    box.className = "lightbox";
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = "";
+    box.appendChild(img);
+    box.addEventListener("click", () => box.remove());
+    document.body.appendChild(box);
   }
 
   function buildMessageNode(m) {
@@ -341,6 +343,7 @@
 
     const wrap = document.createElement("div");
     wrap.className = "message";
+    wrap.dataset.messageId = m.id || "";
     if (m.kind === "private-incoming") wrap.classList.add("private-incoming");
     if (m.kind === "private-outgoing") wrap.classList.add("private-outgoing");
     if (state.me && m.authorId === state.me.id) wrap.classList.add("self");
@@ -360,23 +363,70 @@
     author.className = "message-author";
     author.style.color = colorFromName(m.author);
     author.textContent = m.author;
+    meta.appendChild(author);
+
+    if (m.authorIsAdmin) {
+      const badge = document.createElement("span");
+      badge.className = "admin-badge";
+      badge.textContent = "ADMIN";
+      meta.appendChild(badge);
+    }
 
     const time = document.createElement("span");
     time.className = "message-time";
     time.textContent = formatTime(m.timestamp);
-
-    meta.appendChild(author);
     meta.appendChild(time);
 
-    const text = document.createElement("div");
-    text.className = "message-text";
-    text.textContent = m.text;
-
     body.appendChild(meta);
-    body.appendChild(text);
+
+    if (m.deleted) {
+      const note = document.createElement("div");
+      note.className = "message-deleted";
+      note.textContent =
+        "[삭제된 메시지" +
+        (m.deletedBy ? " · " + m.deletedBy + " 님이 삭제함" : "") +
+        "]";
+      body.appendChild(note);
+    } else {
+      if (m.text) {
+        const text = document.createElement("div");
+        text.className = "message-text";
+        text.textContent = m.text;
+        body.appendChild(text);
+      }
+      if (m.imageUrl) {
+        const img = document.createElement("img");
+        img.className = "message-image";
+        img.src = imageSrcFromObjectPath(m.imageUrl);
+        img.alt = "첨부 이미지";
+        img.loading = "lazy";
+        img.addEventListener("click", () => openLightbox(img.src));
+        body.appendChild(img);
+      }
+    }
 
     wrap.appendChild(avatar);
     wrap.appendChild(body);
+
+    // Admin can delete public messages (not their own DMs, not system, not already deleted)
+    if (
+      state.me &&
+      state.me.isAdmin &&
+      m.kind === "public" &&
+      !m.deleted &&
+      m.id
+    ) {
+      const actions = document.createElement("div");
+      actions.className = "message-actions";
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "msg-action-btn";
+      del.textContent = "🗑 삭제";
+      del.addEventListener("click", () => deleteMessage(m.id));
+      actions.appendChild(del);
+      wrap.appendChild(actions);
+    }
+
     return wrap;
   }
 
@@ -395,10 +445,15 @@
           const msg = entry.message;
           bucket.push({
             kind: "public",
+            id: msg.id,
             author: msg.user.nickname,
             authorId: msg.user.id,
+            authorIsAdmin: !!msg.user.isAdmin,
             text: msg.text,
+            imageUrl: msg.imageUrl,
             timestamp: msg.timestamp,
+            deleted: !!msg.deleted,
+            deletedBy: msg.deletedBy,
           });
         }
       });
@@ -466,9 +521,12 @@
       const isMe = state.me && msg.user.id === state.me.id;
       const item = {
         kind: "public",
+        id: msg.id,
         author: msg.user.nickname,
         authorId: msg.user.id,
+        authorIsAdmin: !!msg.user.isAdmin,
         text: msg.text,
+        imageUrl: msg.imageUrl,
         timestamp: msg.timestamp,
       };
       appendMessage("global", item);
@@ -483,7 +541,7 @@
         if (!msg.silent) {
           showBrowserNotification(
             "#전체 채팅방 · " + msg.user.nickname,
-            msg.text,
+            msg.text || "[이미지]",
             { tag: "public", skipIfFocused: false },
           );
         }
@@ -493,9 +551,11 @@
     socket.on("message:private", (msg) => {
       const item = {
         kind: "private-incoming",
+        id: msg.id,
         author: msg.fromNickname,
         authorId: msg.fromId,
         text: msg.text,
+        imageUrl: msg.imageUrl,
         timestamp: msg.timestamp,
       };
       const key = dmKey(msg.fromId);
@@ -510,10 +570,30 @@
       }
 
       if (!msg.silent) {
-        showBrowserNotification("DM · " + msg.fromNickname, msg.text, {
+        showBrowserNotification("DM · " + msg.fromNickname, msg.text || "[이미지]", {
           tag: key,
           skipIfFocused: false,
         });
+      }
+    });
+
+    socket.on("message:deleted", (info) => {
+      const bucket = ensureBucket("global");
+      const target = bucket.find((m) => m.id === info.id);
+      if (target) {
+        target.deleted = true;
+        target.deletedBy = info.deletedBy;
+        target.text = "";
+        target.imageUrl = undefined;
+      }
+      if (state.activeChannel.type === "global") {
+        const node = $("#messages").querySelector(
+          '[data-message-id="' + info.id + '"]',
+        );
+        if (node && target) {
+          const replacement = buildMessageNode(target);
+          node.replaceWith(replacement);
+        }
       }
     });
 
@@ -569,36 +649,128 @@
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      return { ok: false, error: "서버 오류 (" + res.status + ")" };
+      try {
+        const data = await res.json();
+        return { ok: false, error: data.error || "서버 오류 (" + res.status + ")" };
+      } catch (_) {
+        return { ok: false, error: "서버 오류 (" + res.status + ")" };
+      }
     }
     return res.json();
   }
 
+  // ===== File upload =====
+
+  function setPendingFile(file) {
+    if (state.pendingPreviewUrl) {
+      URL.revokeObjectURL(state.pendingPreviewUrl);
+      state.pendingPreviewUrl = null;
+    }
+    state.pendingFile = file;
+    const preview = $("#imagePreview");
+    const attachBtn = $("#attachBtn");
+    if (file) {
+      const url = URL.createObjectURL(file);
+      state.pendingPreviewUrl = url;
+      $("#imagePreviewImg").src = url;
+      $("#imagePreviewName").textContent =
+        file.name + " (" + Math.round(file.size / 1024) + " KB)";
+      preview.classList.remove("hidden");
+      attachBtn.classList.add("has-file");
+    } else {
+      $("#imagePreviewImg").removeAttribute("src");
+      $("#imagePreviewName").textContent = "";
+      preview.classList.add("hidden");
+      attachBtn.classList.remove("has-file");
+    }
+  }
+
+  async function uploadPendingFile() {
+    const file = state.pendingFile;
+    if (!file) return null;
+    if (file.size > MAX_UPLOAD_SIZE) {
+      throw new Error("파일이 너무 큽니다 (10MB 이하)");
+    }
+
+    const reqRes = await apiPost("/api/storage/uploads/request-url", {
+      name: file.name,
+      size: file.size,
+      contentType: file.type,
+    });
+    if (!reqRes.ok && reqRes.error) {
+      throw new Error(reqRes.error);
+    }
+    const { uploadURL, objectPath } = reqRes;
+    if (!uploadURL || !objectPath) {
+      throw new Error("업로드 URL을 받지 못했습니다.");
+    }
+
+    const putRes = await fetch(uploadURL, {
+      method: "PUT",
+      headers: { "Content-Type": file.type },
+      body: file,
+    });
+    if (!putRes.ok) {
+      throw new Error("파일 업로드 실패 (" + putRes.status + ")");
+    }
+    return objectPath;
+  }
+
   // ===== Sending =====
 
-  function send(text) {
-    if (!text.trim()) return;
+  async function send(text) {
+    const hasFile = !!state.pendingFile;
+    if (!text.trim() && !hasFile) return;
+
+    const sendBtn = $("#messageForm .send-btn");
+    sendBtn.disabled = true;
+
+    let imageUrl;
+    try {
+      if (hasFile) {
+        imageUrl = await uploadPendingFile();
+      }
+    } catch (err) {
+      alert("이미지 업로드 실패: " + (err.message || err));
+      sendBtn.disabled = false;
+      return;
+    }
+
     const silent = state.silentMode;
+
     if (state.activeChannel.type === "global") {
-      state.socket.emit("message:public", { text, silent }, (resp) => {
-        if (!resp || !resp.ok) console.warn("send failed", resp);
-      });
+      state.socket.emit(
+        "message:public",
+        { text, imageUrl, silent },
+        (resp) => {
+          sendBtn.disabled = false;
+          if (resp && resp.ok) {
+            setPendingFile(null);
+          } else {
+            alert("전송 실패: " + ((resp && resp.error) || "알 수 없는 오류"));
+          }
+        },
+      );
     } else {
       const targetId = state.activeChannel.id;
       const targetName = state.activeChannel.name;
       state.socket.emit(
         "message:private",
-        { toId: targetId, text, silent },
+        { toId: targetId, text, imageUrl, silent },
         (resp) => {
+          sendBtn.disabled = false;
           if (resp && resp.ok && state.me) {
             const item = {
               kind: "private-outgoing",
+              id: resp.message ? resp.message.id : undefined,
               author: state.me.nickname,
               authorId: state.me.id,
               text,
+              imageUrl,
               timestamp: Date.now(),
             };
             appendMessage(dmKey(targetId), item);
+            setPendingFile(null);
           } else {
             alert(
               "DM 전송에 실패했습니다: " +
@@ -614,18 +786,25 @@
     }
   }
 
+  function deleteMessage(messageId) {
+    if (!confirm("이 메시지를 삭제하시겠습니까?")) return;
+    state.socket.emit("message:delete", { messageId }, (resp) => {
+      if (!resp || !resp.ok) {
+        alert("삭제 실패: " + ((resp && resp.error) || "알 수 없는 오류"));
+      }
+    });
+  }
+
   // ===== Entry flows =====
 
   async function enterAsAccount(token) {
     await ensureSocketReady();
-    const resp = await socketRegister({ mode: "account", token });
-    return resp;
+    return socketRegister({ mode: "account", token });
   }
 
   async function enterAsAnonymous() {
     await ensureSocketReady();
-    const resp = await socketRegister({ mode: "anonymous" });
-    return resp;
+    return socketRegister({ mode: "anonymous" });
   }
 
   function showApp(resp, isAuthenticated) {
@@ -637,7 +816,9 @@
     const meAv = $("#meAvatar");
     meAv.textContent = initials(state.me.nickname);
     meAv.style.background = colorFromName(state.me.nickname);
-    $("#meStatus").textContent = isAuthenticated ? "로그인됨" : "익명";
+    let status = isAuthenticated ? "로그인됨" : "익명";
+    if (state.me.isAdmin) status = "관리자";
+    $("#meStatus").textContent = status;
 
     $("#loginOverlay").classList.add("hidden");
     $("#app").classList.remove("hidden");
@@ -659,6 +840,7 @@
     state.users = [];
     state.messages = { global: [] };
     state.unread = {};
+    setPendingFile(null);
     $("#app").classList.add("hidden");
     $("#loginOverlay").classList.remove("hidden");
     $("#loginError").textContent = "";
@@ -752,6 +934,23 @@
       showApp(reg, false);
     });
 
+    // File picker
+    $("#attachBtn").addEventListener("click", () => $("#fileInput").click());
+    $("#fileInput").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      if (file.size > MAX_UPLOAD_SIZE) {
+        alert("파일 크기는 10MB 이하여야 합니다.");
+        e.target.value = "";
+        return;
+      }
+      setPendingFile(file);
+      e.target.value = "";
+    });
+    $("#imagePreviewRemove").addEventListener("click", () => {
+      setPendingFile(null);
+    });
+
     // Composer
     const messageForm = $("#messageForm");
     const messageInput = $("#messageInput");
@@ -775,7 +974,7 @@
     messageForm.addEventListener("submit", (e) => {
       e.preventDefault();
       const text = messageInput.value;
-      if (!text.trim()) return;
+      if (!text.trim() && !state.pendingFile) return;
       send(text);
       messageInput.value = "";
       if (typingSent && state.socket) {
@@ -787,14 +986,12 @@
 
     setupSocket();
 
-    // Auto-login if a token exists
     const token = getStoredToken();
     if (token) {
       enterAsAccount(token).then((reg) => {
         if (reg && reg.ok) {
           showApp(reg, true);
         } else {
-          // Token invalid (e.g. server restarted) — clear it
           storeToken(null);
         }
       });
