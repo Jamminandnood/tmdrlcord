@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Realtime Chat</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%AC%3C/text%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <!-- Login modal -->
+    <div id="loginOverlay" class="overlay">
+      <div class="login-card">
+        <div class="login-logo">RC</div>
+        <h1>Realtime Chat</h1>
+        <p class="login-sub">닉네임을 입력하고 입장하세요.</p>
+        <form id="loginForm">
+          <input
+            type="text"
+            id="nicknameInput"
+            placeholder="닉네임 (최대 20자)"
+            maxlength="20"
+            autocomplete="off"
+          />
+          <button type="submit" class="primary">입장하기</button>
+          <button type="button" id="anonymousBtn" class="ghost">
+            익명으로 입장
+          </button>
+          <div id="loginError" class="login-error"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main app -->
+    <div id="app" class="app hidden">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="brand">
+            <div class="brand-logo">RC</div>
+            <div class="brand-name">Realtime Chat</div>
+          </div>
+        </div>
+
+        <div class="channel-section">
+          <div class="section-title">채널</div>
+          <div
+            id="channelGlobal"
+            class="channel-item active"
+            data-channel="global"
+          >
+            <span class="hash">#</span>
+            <span>전체 채팅방</span>
+          </div>
+        </div>
+
+        <div class="channel-section users-section">
+          <div class="section-title">
+            온라인 — <span id="userCount">0</span>
+          </div>
+          <div id="userList" class="user-list"></div>
+        </div>
+
+        <div class="me-bar">
+          <div class="me-avatar" id="meAvatar">?</div>
+          <div class="me-info">
+            <div class="me-nick" id="meNick">-</div>
+            <div class="me-status">
+              <span class="status-dot"></span> 온라인
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main chat area -->
+      <main class="chat-area">
+        <header class="chat-header">
+          <div class="chat-title">
+            <span id="chatTitleIcon" class="hash">#</span>
+            <span id="chatTitle">전체 채팅방</span>
+            <span id="chatSubtitle" class="chat-subtitle"></span>
+          </div>
+          <div class="chat-actions">
+            <button
+              id="silentToggle"
+              class="action-btn"
+              title="무음 모드: 알림 소리/진동 없이 표시"
+            >
+              <span class="dot"></span>
+              무음 모드: <strong id="silentLabel">꺼짐</strong>
+            </button>
+            <button
+              id="notifyToggle"
+              class="action-btn"
+              title="브라우저 알림 켜기/끄기"
+            >
+              <span class="dot"></span>
+              알림: <strong id="notifyLabel">꺼짐</strong>
+            </button>
+            <button id="leaveDmBtn" class="action-btn hidden">
+              ✕ DM 닫기
+            </button>
+          </div>
+        </header>
+
+        <div id="messages" class="messages"></div>
+
+        <div id="typingIndicator" class="typing-indicator"></div>
+
+        <form id="messageForm" class="composer">
+          <input
+            type="text"
+            id="messageInput"
+            placeholder="메시지를 입력하세요..."
+            autocomplete="off"
+            maxlength="2000"
+          />
+          <button type="submit" class="send-btn">전송</button>
+        </form>
+      </main>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO" crossorigin="anonymous"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
