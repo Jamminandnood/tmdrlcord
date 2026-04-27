@@ -36,6 +36,8 @@
     pendingPreviewUrl: null,
     muteTimer: null,
     autoLoginAttempted: false,
+    storageEnabled: false,
+    profileAvatarUrl: null,
   };
 
   // ===== Utility =====
@@ -113,6 +115,58 @@
   function imageSrcFromObjectPath(objectPath) {
     if (!objectPath) return "";
     return "/api/storage" + objectPath;
+  }
+
+  function avatarImageUrl(user) {
+    if (!user) return "";
+    if (user.avatarUrl) return imageSrcFromObjectPath(user.avatarUrl);
+    return "";
+  }
+
+  function applyAvatar(el, user, displayName) {
+    if (!el) return;
+    const name = displayName || (user && (user.nickname || user.displayName)) || "?";
+    const url = avatarImageUrl(user);
+    if (url) {
+      el.classList.add("has-image");
+      el.style.backgroundImage = "url('" + url + "')";
+      el.style.background =
+        "url('" + url + "') center/cover no-repeat, " + userColor(user);
+      el.textContent = initials(name);
+    } else {
+      el.classList.remove("has-image");
+      el.style.backgroundImage = "";
+      el.style.background = userColor(user);
+      el.textContent = initials(name);
+    }
+  }
+
+  function applyAvatarFromUrl(el, avatarUrl, fallbackColor, name) {
+    if (!el) return;
+    if (avatarUrl) {
+      el.classList.add("has-image");
+      el.style.background =
+        "url('" +
+        imageSrcFromObjectPath(avatarUrl) +
+        "') center/cover no-repeat, " +
+        (fallbackColor || "#5865f2");
+      el.textContent = initials(name || "?");
+    } else {
+      el.classList.remove("has-image");
+      el.style.background = fallbackColor || colorFromName(name || "?");
+      el.textContent = initials(name || "?");
+    }
+  }
+
+  async function fetchStorageStatus() {
+    try {
+      const r = await fetch("/api/storage/status");
+      if (!r.ok) return false;
+      const d = await r.json();
+      return !!d.enabled;
+    } catch (_) {
+      return false;
+    }
   }
 
   // ===== Notifications =====
@@ -302,8 +356,7 @@
 
     const avatar = document.createElement("div");
     avatar.className = "user-avatar";
-    avatar.style.background = userColor(user);
-    avatar.textContent = initials(user.nickname);
+    applyAvatar(avatar, user);
 
     const name = document.createElement("div");
     name.className = "user-name";
@@ -349,9 +402,12 @@
 
     const avatar = document.createElement("div");
     avatar.className = "user-avatar";
-    avatar.style.background =
-      account.avatarColor || colorFromName(account.displayName);
-    avatar.textContent = initials(account.displayName);
+    applyAvatarFromUrl(
+      avatar,
+      account.avatarUrl,
+      account.avatarColor || colorFromName(account.displayName),
+      account.displayName,
+    );
 
     const name = document.createElement("div");
     name.className = "user-name";
@@ -490,8 +546,12 @@
 
     const avatar = document.createElement("div");
     avatar.className = "message-avatar";
-    avatar.style.background = m.authorColor || colorFromName(m.author);
-    avatar.textContent = initials(m.author);
+    applyAvatarFromUrl(
+      avatar,
+      m.authorAvatarUrl,
+      m.authorColor || colorFromName(m.author),
+      m.author,
+    );
 
     const body = document.createElement("div");
     body.className = "message-body";
@@ -603,6 +663,7 @@
             authorId: msg.user.id,
             authorIsAdmin: !!msg.user.isAdmin,
             authorColor: msg.user.avatarColor,
+            authorAvatarUrl: msg.user.avatarUrl,
             text: msg.text,
             imageUrl: msg.imageUrl,
             timestamp: msg.timestamp,
@@ -668,8 +729,7 @@
     closePopover();
     popoverTarget = user.id;
     const pop = $("#userPopover");
-    $("#popoverAvatar").textContent = initials(user.nickname);
-    $("#popoverAvatar").style.background = userColor(user);
+    applyAvatar($("#popoverAvatar"), user);
     $("#popoverName").textContent = user.nickname;
     let status = isOnline ? "온라인" : "오프라인";
     if (user.isAdmin) status = "관리자 · " + status;
@@ -784,9 +844,12 @@
     closePopover();
     popoverTarget = "offline:" + account.username;
     const pop = $("#userPopover");
-    $("#popoverAvatar").textContent = initials(account.displayName);
-    $("#popoverAvatar").style.background =
-      account.avatarColor || colorFromName(account.displayName);
+    applyAvatarFromUrl(
+      $("#popoverAvatar"),
+      account.avatarUrl,
+      account.avatarColor || colorFromName(account.displayName),
+      account.displayName,
+    );
     $("#popoverName").textContent = account.displayName;
     let status = "오프라인";
     if (account.isAdmin) status = "관리자 · " + status;
@@ -893,12 +956,33 @@
 
   // ===== Profile modal =====
 
+  function refreshProfileAvatarPreview() {
+    const el = $("#profileAvatarPreview");
+    const color = $("#profileColor").value || "#5865f2";
+    const name = $("#profileDisplayName").value || (state.me && state.me.nickname) || "?";
+    applyAvatarFromUrl(el, state.profileAvatarUrl, color, name);
+  }
+
   function openProfileModal() {
     if (!state.me) return;
+    state.profileAvatarUrl = state.me.avatarUrl || null;
     $("#profileDisplayName").value = state.me.nickname;
     $("#profileBio").value = state.me.bio || "";
     $("#profileColor").value = state.me.avatarColor || userColor(state.me);
     $("#profileError").textContent = "";
+    const hint = $("#profileAvatarHint");
+    const uploadBtn = $("#profileAvatarUpload");
+    if (state.storageEnabled) {
+      hint.textContent = "PNG/JPG/GIF/WebP, 최대 10MB";
+      hint.classList.remove("disabled");
+      uploadBtn.disabled = false;
+    } else {
+      hint.textContent =
+        "이 서버에는 이미지 저장소가 설정되지 않아 사진 업로드가 비활성화되어 있어요.";
+      hint.classList.add("disabled");
+      uploadBtn.disabled = true;
+    }
+    refreshProfileAvatarPreview();
     $("#profileModal").classList.remove("hidden");
     $("#profileDisplayName").focus();
   }
@@ -907,14 +991,65 @@
     $("#profileModal").classList.add("hidden");
   }
 
+  async function handleProfileAvatarUpload(file) {
+    if (!file) return;
+    if (!file.type || !file.type.startsWith("image/")) {
+      $("#profileError").textContent = "이미지 파일만 업로드할 수 있어요.";
+      return;
+    }
+    if (file.size > MAX_UPLOAD_SIZE) {
+      $("#profileError").textContent = "파일이 너무 큽니다 (10MB 이하).";
+      return;
+    }
+    const uploadBtn = $("#profileAvatarUpload");
+    const originalText = uploadBtn.textContent;
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = "업로드 중...";
+    $("#profileError").textContent = "";
+    try {
+      const name =
+        file.name && file.name.trim()
+          ? file.name
+          : "avatar-" + Date.now() + "." + fileExtFromContentType(file.type);
+      const reqRes = await apiPost("/api/storage/uploads/request-url", {
+        name,
+        size: file.size,
+        contentType: file.type,
+      });
+      if (!reqRes.ok && reqRes.error) throw new Error(reqRes.error);
+      const { uploadURL, objectPath } = reqRes;
+      if (!uploadURL || !objectPath)
+        throw new Error("업로드 URL을 받지 못했습니다.");
+      const putRes = await fetch(uploadURL, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+      if (!putRes.ok)
+        throw new Error("업로드 실패 (" + putRes.status + ")");
+      state.profileAvatarUrl = objectPath;
+      refreshProfileAvatarPreview();
+    } catch (err) {
+      $("#profileError").textContent =
+        "업로드 실패: " + (err.message || err);
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = originalText;
+    }
+  }
+
   function saveProfile() {
     const displayName = $("#profileDisplayName").value.trim();
     const bio = $("#profileBio").value;
     const avatarColor = $("#profileColor").value;
+    const avatarUrl =
+      state.profileAvatarUrl === null || state.profileAvatarUrl === undefined
+        ? null
+        : state.profileAvatarUrl;
     $("#profileError").textContent = "";
     state.socket.emit(
       "profile:update",
-      { displayName, bio, avatarColor },
+      { displayName, bio, avatarColor, avatarUrl },
       (resp) => {
         if (!resp || !resp.ok) {
           $("#profileError").textContent =
@@ -935,6 +1070,7 @@
     $("#profileColor").value = colorFromName(
       $("#profileDisplayName").value || "?",
     );
+    refreshProfileAvatarPreview();
   }
 
   // ===== Channel modal =====
@@ -1161,8 +1297,7 @@
     if (!state.me) return;
     $("#meNick").textContent = state.me.nickname;
     const meAv = $("#meAvatar");
-    meAv.textContent = initials(state.me.nickname);
-    meAv.style.background = userColor(state.me);
+    applyAvatar(meAv, state.me);
     let status = state.me.isAuthenticated ? "로그인됨" : "익명";
     if (state.me.isAdmin) status = "관리자";
     if (state.me.mutedUntil && state.me.mutedUntil > Date.now()) {
@@ -1318,6 +1453,7 @@
         authorId: msg.user.id,
         authorIsAdmin: !!msg.user.isAdmin,
         authorColor: msg.user.avatarColor,
+        authorAvatarUrl: msg.user.avatarUrl,
         text: msg.text,
         imageUrl: msg.imageUrl,
         timestamp: msg.timestamp,
@@ -1608,6 +1744,7 @@
               author: state.me.nickname,
               authorId: state.me.id,
               authorColor: state.me.avatarColor,
+              authorAvatarUrl: state.me.avatarUrl,
               text,
               imageUrl,
               timestamp: Date.now(),
@@ -1797,6 +1934,17 @@
     bindAuthTabs();
     setupConnectionWatchers();
 
+    // Probe storage availability (for image upload UI)
+    fetchStorageStatus().then((enabled) => {
+      state.storageEnabled = enabled;
+      const attachBtn = $("#attachBtn");
+      if (attachBtn && !enabled) {
+        attachBtn.disabled = true;
+        attachBtn.title = "이미지 업로드 비활성화 (서버 객체 저장소 미설정)";
+        attachBtn.style.opacity = "0.4";
+      }
+    });
+
     $("#notifyToggle").addEventListener("click", toggleNotifications);
     $("#silentToggle").addEventListener("click", toggleSilent);
     $("#leaveDmBtn").addEventListener("click", openGlobal);
@@ -1813,6 +1961,24 @@
     $("#profileCancel").addEventListener("click", closeProfileModal);
     $("#profileSave").addEventListener("click", saveProfile);
     $("#profileColorReset").addEventListener("click", resetProfileColor);
+    $("#profileColor").addEventListener("input", refreshProfileAvatarPreview);
+    $("#profileDisplayName").addEventListener(
+      "input",
+      refreshProfileAvatarPreview,
+    );
+    $("#profileAvatarUpload").addEventListener("click", () => {
+      if (!state.storageEnabled) return;
+      $("#profileAvatarFile").click();
+    });
+    $("#profileAvatarFile").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) handleProfileAvatarUpload(f);
+      e.target.value = "";
+    });
+    $("#profileAvatarRemove").addEventListener("click", () => {
+      state.profileAvatarUrl = null;
+      refreshProfileAvatarPreview();
+    });
     $("#profileModal").addEventListener("click", (e) => {
       if (e.target === $("#profileModal")) closeProfileModal();
     });

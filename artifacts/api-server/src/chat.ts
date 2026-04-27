@@ -35,6 +35,7 @@ type SessionUser = {
   isAdmin: boolean;
   bio: string;
   avatarColor?: string;
+  avatarUrl?: string;
   mutedUntil: number;
   currentChannelId: string;
 };
@@ -82,6 +83,7 @@ export type PublicSessionUser = {
   isAuthenticated: boolean;
   isAdmin: boolean;
   avatarColor?: string;
+  avatarUrl?: string;
   bio: string;
   mutedUntil: number;
 };
@@ -154,6 +156,7 @@ function toPublicUser(s: SessionUser): PublicSessionUser {
     isAuthenticated: s.isAuthenticated,
     isAdmin: s.isAdmin,
     avatarColor: s.avatarColor,
+    avatarUrl: s.avatarUrl,
     bio: s.bio,
     mutedUntil: s.mutedUntil,
   };
@@ -228,6 +231,7 @@ function refreshSessionFromAccount(s: SessionUser): void {
   s.nickname = account.displayName || account.username;
   s.bio = account.bio || "";
   s.avatarColor = account.avatarColor;
+  s.avatarUrl = account.avatarUrl;
   s.isAdmin = !!account.isAdmin;
   s.mutedUntil = account.mutedUntil || 0;
 }
@@ -277,6 +281,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
         let isAdmin = false;
         let bio = "";
         let avatarColor: string | undefined;
+        let avatarUrl: string | undefined;
         let mutedUntil = 0;
 
         if (mode === "account") {
@@ -303,6 +308,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           isAdmin = !!account.isAdmin;
           bio = account.bio || "";
           avatarColor = account.avatarColor;
+          avatarUrl = account.avatarUrl;
           mutedUntil = account.mutedUntil || 0;
 
           // Disconnect any other socket logged in to the same account.
@@ -360,6 +366,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
           isAdmin,
           bio,
           avatarColor,
+          avatarUrl,
           mutedUntil,
           currentChannelId: GLOBAL_CHANNEL_ID,
         };
@@ -615,7 +622,12 @@ export function attachChatServer(server: http.Server): SocketIOServer {
       "profile:update",
       async (
         payload:
-          | { displayName?: string; bio?: string; avatarColor?: string }
+          | {
+              displayName?: string;
+              bio?: string;
+              avatarColor?: string;
+              avatarUrl?: string | null;
+            }
           | undefined,
         ack?: (resp: {
           ok: boolean;
@@ -635,6 +647,7 @@ export function attachChatServer(server: http.Server): SocketIOServer {
             displayName: payload?.displayName,
             bio: payload?.bio,
             avatarColor: payload?.avatarColor,
+            avatarUrl: payload?.avatarUrl,
           });
           if (!result.ok) {
             ack?.({ ok: false, error: result.error });
@@ -671,6 +684,15 @@ export function attachChatServer(server: http.Server): SocketIOServer {
             if (!c || /^#[0-9a-fA-F]{6}$/.test(c)) {
               user.avatarColor = c || undefined;
             }
+          }
+          if (payload?.avatarUrl === null || payload?.avatarUrl === "") {
+            user.avatarUrl = undefined;
+          } else if (
+            typeof payload?.avatarUrl === "string" &&
+            payload.avatarUrl.startsWith("/objects/") &&
+            payload.avatarUrl.length <= 500
+          ) {
+            user.avatarUrl = payload.avatarUrl;
           }
         }
 

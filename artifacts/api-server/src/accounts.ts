@@ -12,6 +12,7 @@ export type Account = {
   displayName?: string;
   bio?: string;
   avatarColor?: string;
+  avatarUrl?: string;
   banned?: boolean;
   bannedAt?: number;
   bannedReason?: string;
@@ -24,6 +25,7 @@ export type PublicAccount = {
   isAdmin: boolean;
   bio: string;
   avatarColor?: string;
+  avatarUrl?: string;
   banned: boolean;
   mutedUntil: number;
   createdAt: number;
@@ -128,6 +130,7 @@ export function publicAccount(account: Account): PublicAccount {
     isAdmin: !!account.isAdmin,
     bio: account.bio || "",
     avatarColor: account.avatarColor,
+    avatarUrl: account.avatarUrl,
     banned: !!account.banned,
     mutedUntil: account.mutedUntil || 0,
     createdAt: account.createdAt,
@@ -239,7 +242,12 @@ export type AccountUpdateResult = {
 
 export async function updateAccountProfile(
   username: string,
-  patch: { displayName?: string; bio?: string; avatarColor?: string },
+  patch: {
+    displayName?: string;
+    bio?: string;
+    avatarColor?: string;
+    avatarUrl?: string | null;
+  },
 ): Promise<AccountUpdateResult> {
   await load();
   const account = accounts.get(username.toLowerCase());
@@ -261,6 +269,19 @@ export async function updateAccountProfile(
       return { ok: false, error: "올바른 색상 코드가 아닙니다." };
     }
     account.avatarColor = c || undefined;
+  }
+  if (patch.avatarUrl !== undefined) {
+    if (patch.avatarUrl === null || patch.avatarUrl === "") {
+      account.avatarUrl = undefined;
+    } else if (
+      typeof patch.avatarUrl === "string" &&
+      patch.avatarUrl.startsWith("/objects/") &&
+      patch.avatarUrl.length <= 500
+    ) {
+      account.avatarUrl = patch.avatarUrl;
+    } else {
+      return { ok: false, error: "올바르지 않은 이미지 경로입니다." };
+    }
   }
   void persist();
   return { ok: true, account: publicAccount(account) };

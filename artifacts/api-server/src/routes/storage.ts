@@ -23,9 +23,27 @@ const ALLOWED_TYPES = new Set([
   "image/webp",
 ]);
 
+function isStorageEnabled(): boolean {
+  return !!(
+    process.env.PRIVATE_OBJECT_DIR &&
+    process.env.PRIVATE_OBJECT_DIR.trim().length > 0
+  );
+}
+
+router.get("/storage/status", (_req: Request, res: Response) => {
+  res.json({ enabled: isStorageEnabled() });
+});
+
 router.post(
   "/storage/uploads/request-url",
   async (req: Request, res: Response) => {
+    if (!isStorageEnabled()) {
+      res.status(503).json({
+        error:
+          "이미지 업로드가 이 서버에서는 비활성화되어 있습니다. (관리자: 객체 저장소를 설정하세요)",
+      });
+      return;
+    }
     const body = req.body ?? {};
     const name = typeof body.name === "string" ? body.name : "";
     const size = typeof body.size === "number" ? body.size : 0;
@@ -66,6 +84,10 @@ router.post(
 router.get(
   "/storage/objects/*path",
   async (req: Request, res: Response) => {
+    if (!isStorageEnabled()) {
+      res.status(503).json({ error: "객체 저장소가 비활성화되어 있습니다." });
+      return;
+    }
     try {
       const raw = req.params.path;
       const wildcardPath = Array.isArray(raw) ? raw.join("/") : raw;

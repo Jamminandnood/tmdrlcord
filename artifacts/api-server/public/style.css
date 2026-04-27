@@ -1171,3 +1171,58 @@ button:active {
   font-size: 13px;
   text-align: center;
 }
+
+/* ----- Avatar with image ----- */
+.user-avatar.has-image,
+.message-avatar.has-image,
+.popover-avatar.has-image,
+.me-avatar.has-image,
+.profile-avatar-preview.has-image {
+  background-size: cover !important;
+  background-position: center;
+  background-repeat: no-repeat;
+  color: transparent !important;
+  text-indent: -9999px;
+}
+
+/* ----- Profile avatar section ----- */
+.profile-avatar-section {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  background: #2b2d31;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.profile-avatar-preview {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #5865f2;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 24px;
+  flex-shrink: 0;
+}
+.profile-avatar-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+.profile-avatar-controls .ghost-btn {
+  text-align: left;
+  width: max-content;
+}
+.profile-avatar-hint {
+  font-size: 11px;
+  color: #949ba4;
+  margin-top: 2px;
+}
+.profile-avatar-hint.disabled {
+  color: #ed4245;
+}

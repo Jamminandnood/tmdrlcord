@@ -236,6 +236,30 @@
     <div id="profileModal" class="modal-overlay hidden">
       <div class="modal-card">
         <h3>프로필 편집</h3>
+        <div class="profile-avatar-section">
+          <div class="profile-avatar-preview" id="profileAvatarPreview">?</div>
+          <div class="profile-avatar-controls" id="profileAvatarControls">
+            <input
+              type="file"
+              id="profileAvatarFile"
+              accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+              hidden
+            />
+            <button type="button" class="ghost-btn" id="profileAvatarUpload">
+              📷 이미지 업로드
+            </button>
+            <button
+              type="button"
+              class="ghost-btn"
+              id="profileAvatarRemove"
+            >
+              제거
+            </button>
+            <div class="profile-avatar-hint" id="profileAvatarHint">
+              PNG/JPG/GIF/WebP, 최대 10MB
+            </div>
+          </div>
+        </div>
         <label>표시 이름
           <input type="text" id="profileDisplayName" maxlength="24" />
         </label>
@@ -247,7 +271,7 @@
             placeholder="자신을 소개하는 한 줄을 적어보세요"
           ></textarea>
         </label>
-        <label>아바타 색상
+        <label>아바타 배경색 (이미지가 없을 때 사용)
           <div class="color-row">
             <input type="color" id="profileColor" value="#5865f2" />
             <button type="button" class="ghost-btn" id="profileColorReset">
