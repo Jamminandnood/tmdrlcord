@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { logger } from "../lib/logger";
 import {
   Router,
   type IRouter,
@@ -56,7 +57,7 @@ router.post(
         objectStorageService.normalizeObjectEntityPath(uploadURL);
       res.json({ uploadURL, objectPath });
     } catch (err) {
-      req.log?.error({ err }, "Error generating upload URL");
+      logger.error({ err }, "Error generating upload URL");
       res.status(500).json({ error: "업로드 URL 생성에 실패했습니다." });
     }
   },
@@ -88,7 +89,7 @@ router.get(
         res.status(404).json({ error: "파일을 찾을 수 없습니다." });
         return;
       }
-      req.log?.error({ err }, "Error serving object");
+      logger.error({ err }, "Error serving object");
       res.status(500).json({ error: "파일을 가져오지 못했습니다." });
     }
   },

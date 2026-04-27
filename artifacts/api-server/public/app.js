@@ -17,20 +17,25 @@
 
   const TOKEN_KEY = "rc:token";
   const USERNAME_KEY = "rc:username";
+  const ANON_NICK_KEY = "rc:anonNick";
   const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
   const state = {
     socket: null,
     me: null,
     users: [],
-    activeChannel: { type: "global", id: "global", name: "전체 채팅방" },
-    messages: { global: [] },
+    offlineUsers: [],
+    channels: [],
+    messages: {},
     unread: {},
+    activeView: { kind: "channel", id: "global", name: "전체 채팅방" },
     notifyEnabled: false,
     silentMode: false,
     typingTimers: new Map(),
     pendingFile: null,
     pendingPreviewUrl: null,
+    muteTimer: null,
+    autoLoginAttempted: false,
   };
 
   // ===== Utility =====
@@ -47,9 +52,15 @@
     return COLORS[Math.abs(hash) % COLORS.length];
   }
 
+  function userColor(u) {
+    if (u && u.avatarColor) return u.avatarColor;
+    return colorFromName((u && u.nickname) || (u && u.username) || "?");
+  }
+
   function initials(name) {
     if (!name) return "?";
-    return name.trim().slice(0, 2).toUpperCase();
+    const trimmed = name.trim();
+    return trimmed.slice(0, 2).toUpperCase();
   }
 
   function formatTime(ts) {
@@ -59,22 +70,12 @@
     });
   }
 
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
   function dmKey(userId) {
     return "dm:" + userId;
   }
 
-  function channelKey(channel) {
-    if (channel.type === "global") return "global";
-    return dmKey(channel.id);
+  function viewKey(view) {
+    return view.kind === "channel" ? "ch:" + view.id : "dm:" + view.id;
   }
 
   function ensureBucket(key) {
@@ -82,16 +83,17 @@
     return state.messages[key];
   }
 
-  function getStoredToken() {
+  function safeLocal(fn) {
     try {
-      return localStorage.getItem(TOKEN_KEY) || null;
+      return fn();
     } catch (_) {
-      return null;
+      return undefined;
     }
   }
-
+  const getStoredToken = () => safeLocal(() => localStorage.getItem(TOKEN_KEY)) || null;
+  const getStoredAnonNick = () => safeLocal(() => localStorage.getItem(ANON_NICK_KEY)) || null;
   function storeToken(token, username) {
-    try {
+    safeLocal(() => {
       if (token) {
         localStorage.setItem(TOKEN_KEY, token);
         if (username) localStorage.setItem(USERNAME_KEY, username);
@@ -99,9 +101,13 @@
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USERNAME_KEY);
       }
-    } catch (_) {
-      // ignore
-    }
+    });
+  }
+  function storeAnonNick(nick) {
+    safeLocal(() => {
+      if (nick) localStorage.setItem(ANON_NICK_KEY, nick);
+      else localStorage.removeItem(ANON_NICK_KEY);
+    });
   }
 
   function imageSrcFromObjectPath(objectPath) {
@@ -112,21 +118,17 @@
   // ===== Notifications =====
 
   function loadPrefs() {
-    try {
+    safeLocal(() => {
       state.notifyEnabled = localStorage.getItem("notifyEnabled") === "1";
       state.silentMode = localStorage.getItem("silentMode") === "1";
-    } catch (_) {
-      // ignore
-    }
+    });
   }
 
   function savePrefs() {
-    try {
+    safeLocal(() => {
       localStorage.setItem("notifyEnabled", state.notifyEnabled ? "1" : "0");
       localStorage.setItem("silentMode", state.silentMode ? "1" : "0");
-    } catch (_) {
-      // ignore
-    }
+    });
   }
 
   function updateNotifyButton() {
@@ -164,9 +166,7 @@
       state.notifyEnabled = true;
     } else {
       state.notifyEnabled = false;
-      alert(
-        "브라우저 설정에서 알림이 차단되어 있습니다. 주소창 옆 자물쇠 아이콘에서 알림을 허용해주세요.",
-      );
+      alert("브라우저 설정에서 알림이 차단되어 있습니다.");
     }
     savePrefs();
     updateNotifyButton();
@@ -200,35 +200,109 @@
     }
   }
 
-  // ===== Rendering =====
+  // ===== Connection banner =====
+
+  function setBanner(text, kind) {
+    const b = $("#connBanner");
+    if (!text) {
+      b.classList.add("hidden");
+      b.classList.remove("error");
+      return;
+    }
+    b.textContent = text;
+    b.classList.toggle("error", kind === "error");
+    b.classList.remove("hidden");
+  }
+
+  // ===== Render: channels =====
+
+  function renderChannels() {
+    const list = $("#channelList");
+    list.innerHTML = "";
+    state.channels.forEach((c) => {
+      const item = document.createElement("div");
+      item.className = "channel-item";
+      item.dataset.channelId = c.id;
+      if (
+        state.activeView.kind === "channel" &&
+        state.activeView.id === c.id
+      ) {
+        item.classList.add("active");
+      }
+      const icon = document.createElement("span");
+      icon.className = "hash";
+      icon.textContent = c.type === "private" ? "🔒" : "#";
+      const name = document.createElement("span");
+      name.textContent = c.name;
+      item.appendChild(icon);
+      item.appendChild(name);
+
+      const unread = state.unread["ch:" + c.id] || 0;
+      if (unread > 0) {
+        const badge = document.createElement("span");
+        badge.className = "unread-badge";
+        badge.textContent = String(unread);
+        item.appendChild(badge);
+      }
+
+      if (state.me && state.me.isAdmin && c.type !== "global") {
+        const actions = document.createElement("div");
+        actions.className = "channel-actions";
+        const del = document.createElement("button");
+        del.textContent = "🗑";
+        del.title = "채널 삭제";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteChannelClick(c);
+        });
+        actions.appendChild(del);
+        item.appendChild(actions);
+      }
+
+      item.addEventListener("click", () => openChannel(c));
+      list.appendChild(item);
+    });
+  }
+
+  // ===== Render: users =====
 
   function renderUsers() {
     const list = $("#userList");
+    const offlineList = $("#offlineList");
     const meId = state.me ? state.me.id : null;
     const others = state.users.filter((u) => u.id !== meId);
     const me = state.users.find((u) => u.id === meId);
 
     $("#userCount").textContent = state.users.length;
-    list.innerHTML = "";
+    $("#offlineCount").textContent = state.offlineUsers.length;
 
-    if (me) list.appendChild(buildUserRow(me, true));
-    others.forEach((u) => list.appendChild(buildUserRow(u, false)));
+    list.innerHTML = "";
+    if (me) list.appendChild(buildUserRow(me, true, true));
+    others.forEach((u) => list.appendChild(buildUserRow(u, false, true)));
+
+    offlineList.innerHTML = "";
+    state.offlineUsers.forEach((a) => {
+      offlineList.appendChild(buildOfflineRow(a));
+    });
   }
 
-  function buildUserRow(user, isSelf) {
+  function buildUserRow(user, isSelf, isOnline) {
     const row = document.createElement("div");
-    row.className = "user-item";
+    row.className = "user-item " + (isOnline ? "online" : "offline");
     row.dataset.userId = user.id;
     if (
-      state.activeChannel.type === "dm" &&
-      state.activeChannel.id === user.id
+      state.activeView.kind === "dm" &&
+      state.activeView.id === user.id
     ) {
       row.classList.add("active");
+    }
+    if (user.mutedUntil && user.mutedUntil > Date.now()) {
+      row.classList.add("muted");
     }
 
     const avatar = document.createElement("div");
     avatar.className = "user-avatar";
-    avatar.style.background = colorFromName(user.nickname);
+    avatar.style.background = userColor(user);
     avatar.textContent = initials(user.nickname);
 
     const name = document.createElement("div");
@@ -258,38 +332,95 @@
         badge.textContent = String(unread);
         row.appendChild(badge);
       }
-      row.addEventListener("click", () => openDm(user));
     }
+
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openUserPopover(user, row, isOnline, isSelf);
+    });
 
     return row;
   }
 
+  function buildOfflineRow(account) {
+    const row = document.createElement("div");
+    row.className = "user-item offline";
+    row.dataset.username = account.username;
+
+    const avatar = document.createElement("div");
+    avatar.className = "user-avatar";
+    avatar.style.background =
+      account.avatarColor || colorFromName(account.displayName);
+    avatar.textContent = initials(account.displayName);
+
+    const name = document.createElement("div");
+    name.className = "user-name";
+    name.textContent = account.displayName;
+
+    row.appendChild(avatar);
+    row.appendChild(name);
+
+    if (account.isAdmin) {
+      const badge = document.createElement("span");
+      badge.className = "admin-badge";
+      badge.textContent = "ADMIN";
+      row.appendChild(badge);
+    }
+    if (account.banned) {
+      const badge = document.createElement("span");
+      badge.className = "admin-badge";
+      badge.style.background = "#ed4245";
+      badge.textContent = "BAN";
+      row.appendChild(badge);
+    }
+
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openOfflineUserPopover(account, row);
+    });
+
+    return row;
+  }
+
+  // ===== Channel header =====
+
   function renderChannelHeader() {
-    const ch = state.activeChannel;
+    const v = state.activeView;
     const titleIcon = $("#chatTitleIcon");
     const title = $("#chatTitle");
     const subtitle = $("#chatSubtitle");
     const leaveBtn = $("#leaveDmBtn");
+    const manageBtn = $("#manageMembersBtn");
 
-    if (ch.type === "global") {
-      titleIcon.textContent = "#";
-      titleIcon.classList.remove("hidden");
-      title.textContent = "전체 채팅방";
-      subtitle.textContent = "누구나 참여 가능한 공개 채널";
+    manageBtn.classList.add("hidden");
+
+    if (v.kind === "channel") {
+      const ch = state.channels.find((c) => c.id === v.id);
+      const isPrivate = ch && ch.type === "private";
+      titleIcon.textContent = isPrivate ? "🔒" : "#";
+      title.textContent = (ch && ch.name) || v.name;
+      subtitle.textContent = isPrivate
+        ? "비공개 채널 (허용된 사람만 볼 수 있음)"
+        : ch && ch.type === "global"
+          ? "누구나 참여 가능한 공개 채널"
+          : "공개 채널";
       leaveBtn.classList.add("hidden");
-      $("#channelGlobal").classList.add("active");
+      if (state.me && state.me.isAdmin && isPrivate) {
+        manageBtn.classList.remove("hidden");
+      }
     } else {
       titleIcon.textContent = "@";
-      title.textContent = ch.name;
+      title.textContent = v.name;
       subtitle.textContent = "1:1 비밀 채팅 (다른 사용자에게 보이지 않습니다)";
       leaveBtn.classList.remove("hidden");
-      $("#channelGlobal").classList.remove("active");
     }
   }
 
+  // ===== Render: messages =====
+
   function renderMessages() {
     const container = $("#messages");
-    const key = channelKey(state.activeChannel);
+    const key = viewKey(state.activeView);
     const list = ensureBucket(key);
     container.innerHTML = "";
 
@@ -297,10 +428,12 @@
       const empty = document.createElement("div");
       empty.className = "empty-state";
       empty.innerHTML =
-        state.activeChannel.type === "global"
-          ? "<h3>전체 채팅방에 오신 것을 환영합니다</h3><p>첫 메시지를 보내보세요.</p>"
+        state.activeView.kind === "channel"
+          ? "<h3>" +
+            escapeHtmlText(state.activeView.name) +
+            " 에 오신 것을 환영합니다</h3><p>첫 메시지를 보내보세요.</p>"
           : "<h3>" +
-            escapeHtml(state.activeChannel.name) +
+            escapeHtmlText(state.activeView.name) +
             " 님과의 비밀 대화</h3><p>이곳에서 나눈 대화는 두 사람만 볼 수 있어요.</p>";
       container.appendChild(empty);
       return;
@@ -310,10 +443,17 @@
     container.scrollTop = container.scrollHeight;
   }
 
+  function escapeHtmlText(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
   function appendMessage(key, message) {
     const list = ensureBucket(key);
     list.push(message);
-    if (channelKey(state.activeChannel) === key) {
+    if (viewKey(state.activeView) === key) {
       const container = $("#messages");
       const empty = container.querySelector(".empty-state");
       if (empty) container.removeChild(empty);
@@ -350,7 +490,7 @@
 
     const avatar = document.createElement("div");
     avatar.className = "message-avatar";
-    avatar.style.background = colorFromName(m.author);
+    avatar.style.background = m.authorColor || colorFromName(m.author);
     avatar.textContent = initials(m.author);
 
     const body = document.createElement("div");
@@ -361,7 +501,7 @@
 
     const author = document.createElement("span");
     author.className = "message-author";
-    author.style.color = colorFromName(m.author);
+    author.style.color = m.authorColor || colorFromName(m.author);
     author.textContent = m.author;
     meta.appendChild(author);
 
@@ -405,14 +545,26 @@
       }
     }
 
+    // Author click → popover
+    avatar.style.cursor = "pointer";
+    author.style.cursor = "pointer";
+    const openAuthorPopover = (e) => {
+      if (!m.authorId) return;
+      const u = state.users.find((x) => x.id === m.authorId);
+      if (u) {
+        openUserPopover(u, e.target, true, state.me && u.id === state.me.id);
+      }
+    };
+    avatar.addEventListener("click", openAuthorPopover);
+    author.addEventListener("click", openAuthorPopover);
+
     wrap.appendChild(avatar);
     wrap.appendChild(body);
 
-    // Admin can delete public messages (not their own DMs, not system, not already deleted)
     if (
       state.me &&
       state.me.isAdmin &&
-      m.kind === "public" &&
+      m.kind === "channel" &&
       !m.deleted &&
       m.id
     ) {
@@ -422,7 +574,7 @@
       del.type = "button";
       del.className = "msg-action-btn";
       del.textContent = "🗑 삭제";
-      del.addEventListener("click", () => deleteMessage(m.id));
+      del.addEventListener("click", () => deleteMessage(m.id, m.channelId));
       actions.appendChild(del);
       wrap.appendChild(actions);
     }
@@ -430,8 +582,8 @@
     return wrap;
   }
 
-  function loadHistory(historyItems) {
-    const bucket = ensureBucket("global");
+  function loadHistoryInto(bucketKey, historyItems) {
+    const bucket = ensureBucket(bucketKey);
     bucket.length = 0;
     if (Array.isArray(historyItems)) {
       historyItems.forEach((entry) => {
@@ -441,14 +593,16 @@
             text: entry.message.text,
             timestamp: entry.message.timestamp,
           });
-        } else if (entry.kind === "public") {
+        } else if (entry.kind === "channel") {
           const msg = entry.message;
           bucket.push({
-            kind: "public",
+            kind: "channel",
             id: msg.id,
+            channelId: msg.channelId,
             author: msg.user.nickname,
             authorId: msg.user.id,
             authorIsAdmin: !!msg.user.isAdmin,
+            authorColor: msg.user.avatarColor,
             text: msg.text,
             imageUrl: msg.imageUrl,
             timestamp: msg.timestamp,
@@ -462,43 +616,676 @@
 
   // ===== Channel switching =====
 
-  function openGlobal() {
-    state.activeChannel = {
-      type: "global",
-      id: "global",
-      name: "전체 채팅방",
+  function openChannel(channel) {
+    state.activeView = {
+      kind: "channel",
+      id: channel.id,
+      name: channel.name,
     };
-    state.unread.global = 0;
+    state.unread["ch:" + channel.id] = 0;
     renderChannelHeader();
+    renderChannels();
     renderMessages();
     renderUsers();
     $("#typingIndicator").textContent = "";
+    if (state.socket) {
+      state.socket.emit(
+        "channel:select",
+        { channelId: channel.id },
+        (resp) => {
+          if (resp && resp.ok) {
+            loadHistoryInto("ch:" + channel.id, resp.history);
+            renderMessages();
+          }
+        },
+      );
+    }
     $("#messageInput").focus();
   }
 
   function openDm(user) {
-    state.activeChannel = { type: "dm", id: user.id, name: user.nickname };
+    state.activeView = { kind: "dm", id: user.id, name: user.nickname };
     state.unread[dmKey(user.id)] = 0;
     renderChannelHeader();
+    renderChannels();
     renderMessages();
     renderUsers();
     $("#typingIndicator").textContent = "";
     $("#messageInput").focus();
   }
 
-  // ===== Socket handlers =====
+  function openGlobal() {
+    const global = state.channels.find((c) => c.type === "global");
+    if (global) openChannel(global);
+    else
+      openChannel({ id: "global", name: "전체 채팅방", type: "global" });
+  }
+
+  // ===== Popovers =====
+
+  let popoverTarget = null;
+  function openUserPopover(user, anchorEl, isOnline, isSelf) {
+    closePopover();
+    popoverTarget = user.id;
+    const pop = $("#userPopover");
+    $("#popoverAvatar").textContent = initials(user.nickname);
+    $("#popoverAvatar").style.background = userColor(user);
+    $("#popoverName").textContent = user.nickname;
+    let status = isOnline ? "온라인" : "오프라인";
+    if (user.isAdmin) status = "관리자 · " + status;
+    if (user.mutedUntil && user.mutedUntil > Date.now()) {
+      const sec = Math.ceil((user.mutedUntil - Date.now()) / 1000);
+      status += " · 음소거(" + sec + "초)";
+    }
+    $("#popoverStatus").textContent = status;
+    const bio = $("#popoverBio");
+    if (user.bio) {
+      bio.textContent = user.bio;
+      bio.classList.remove("empty");
+    } else {
+      bio.textContent = "(소개가 없습니다)";
+      bio.classList.add("empty");
+    }
+    const actions = $("#popoverActions");
+    actions.innerHTML = "";
+
+    if (!isSelf && isOnline) {
+      const dmBtn = document.createElement("button");
+      dmBtn.textContent = "💬 1:1 메시지";
+      dmBtn.addEventListener("click", () => {
+        closePopover();
+        openDm(user);
+      });
+      actions.appendChild(dmBtn);
+    }
+
+    if (state.me && state.me.isAdmin && !isSelf) {
+      const renameBtn = document.createElement("button");
+      renameBtn.textContent = "✏ 닉네임 강제 변경";
+      renameBtn.addEventListener("click", () => {
+        closePopover();
+        openRenameModal(user);
+      });
+      actions.appendChild(renameBtn);
+
+      if (!user.isAdmin) {
+        const muted = user.mutedUntil && user.mutedUntil > Date.now();
+        if (muted) {
+          const unmuteBtn = document.createElement("button");
+          unmuteBtn.textContent = "🔊 음소거 해제";
+          unmuteBtn.addEventListener("click", () => {
+            closePopover();
+            state.socket.emit(
+              "admin:unmute",
+              { targetId: user.id },
+              respHandler("음소거 해제"),
+            );
+          });
+          actions.appendChild(unmuteBtn);
+        } else {
+          const muteBtn = document.createElement("button");
+          muteBtn.textContent = "🔇 5분 채팅 차단";
+          muteBtn.addEventListener("click", () => {
+            closePopover();
+            state.socket.emit(
+              "admin:mute",
+              { targetId: user.id, durationMs: 5 * 60 * 1000 },
+              respHandler("음소거"),
+            );
+          });
+          actions.appendChild(muteBtn);
+        }
+
+        const kickBtn = document.createElement("button");
+        kickBtn.className = "danger";
+        kickBtn.textContent = "👢 강퇴 (Kick)";
+        kickBtn.addEventListener("click", () => {
+          if (!confirm(user.nickname + " 님을 강퇴하시겠습니까?")) return;
+          closePopover();
+          state.socket.emit(
+            "admin:kick",
+            { targetId: user.id },
+            respHandler("강퇴"),
+          );
+        });
+        actions.appendChild(kickBtn);
+
+        if (user.username && !user.isAnonymous) {
+          const banBtn = document.createElement("button");
+          banBtn.className = "danger";
+          banBtn.textContent = "🚫 영구 차단 (Ban)";
+          banBtn.addEventListener("click", () => {
+            if (!confirm(user.nickname + " 님을 영구 차단하시겠습니까?")) return;
+            closePopover();
+            state.socket.emit(
+              "admin:ban",
+              { targetId: user.id },
+              respHandler("차단"),
+            );
+          });
+          actions.appendChild(banBtn);
+        }
+      }
+    }
+
+    if (actions.children.length === 0) {
+      const note = document.createElement("div");
+      note.style.color = "var(--text-muted)";
+      note.style.fontSize = "12px";
+      note.textContent = "사용 가능한 작업이 없습니다.";
+      actions.appendChild(note);
+    }
+
+    pop.classList.remove("hidden");
+    positionPopover(pop, anchorEl);
+  }
+
+  function openOfflineUserPopover(account, anchorEl) {
+    closePopover();
+    popoverTarget = "offline:" + account.username;
+    const pop = $("#userPopover");
+    $("#popoverAvatar").textContent = initials(account.displayName);
+    $("#popoverAvatar").style.background =
+      account.avatarColor || colorFromName(account.displayName);
+    $("#popoverName").textContent = account.displayName;
+    let status = "오프라인";
+    if (account.isAdmin) status = "관리자 · " + status;
+    if (account.banned) status += " · 차단됨";
+    $("#popoverStatus").textContent = status;
+    const bio = $("#popoverBio");
+    if (account.bio) {
+      bio.textContent = account.bio;
+      bio.classList.remove("empty");
+    } else {
+      bio.textContent = "(소개가 없습니다)";
+      bio.classList.add("empty");
+    }
+    const actions = $("#popoverActions");
+    actions.innerHTML = "";
+
+    if (state.me && state.me.isAdmin && !account.isAdmin) {
+      if (account.banned) {
+        const unbanBtn = document.createElement("button");
+        unbanBtn.textContent = "✅ 차단 해제";
+        unbanBtn.addEventListener("click", () => {
+          closePopover();
+          state.socket.emit(
+            "admin:unban",
+            { username: account.username },
+            respHandler("차단 해제"),
+          );
+        });
+        actions.appendChild(unbanBtn);
+      } else {
+        const banBtn = document.createElement("button");
+        banBtn.className = "danger";
+        banBtn.textContent = "🚫 영구 차단";
+        banBtn.addEventListener("click", () => {
+          if (!confirm(account.displayName + " 님을 영구 차단하시겠습니까?")) return;
+          closePopover();
+          state.socket.emit(
+            "admin:ban",
+            { username: account.username },
+            respHandler("차단"),
+          );
+        });
+        actions.appendChild(banBtn);
+      }
+      if (account.mutedUntil && account.mutedUntil > Date.now()) {
+        const unmuteBtn = document.createElement("button");
+        unmuteBtn.textContent = "🔊 음소거 해제";
+        unmuteBtn.addEventListener("click", () => {
+          closePopover();
+          state.socket.emit(
+            "admin:unmute",
+            { username: account.username },
+            respHandler("음소거 해제"),
+          );
+        });
+        actions.appendChild(unmuteBtn);
+      }
+    }
+
+    if (actions.children.length === 0) {
+      const note = document.createElement("div");
+      note.style.color = "var(--text-muted)";
+      note.style.fontSize = "12px";
+      note.textContent = "사용 가능한 작업이 없습니다.";
+      actions.appendChild(note);
+    }
+    pop.classList.remove("hidden");
+    positionPopover(pop, anchorEl);
+  }
+
+  function positionPopover(pop, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    pop.style.visibility = "hidden";
+    pop.style.left = "0px";
+    pop.style.top = "0px";
+    pop.classList.remove("hidden");
+    const pw = pop.offsetWidth;
+    const ph = pop.offsetHeight;
+    let left = rect.right + 8;
+    let top = rect.top;
+    if (left + pw > window.innerWidth - 8) {
+      left = Math.max(8, rect.left - pw - 8);
+    }
+    if (top + ph > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - ph - 8);
+    }
+    pop.style.left = left + "px";
+    pop.style.top = top + "px";
+    pop.style.visibility = "";
+  }
+
+  function closePopover() {
+    popoverTarget = null;
+    $("#userPopover").classList.add("hidden");
+  }
+
+  function respHandler(label) {
+    return (resp) => {
+      if (!resp || !resp.ok) {
+        alert(label + " 실패: " + ((resp && resp.error) || "알 수 없는 오류"));
+      }
+    };
+  }
+
+  // ===== Profile modal =====
+
+  function openProfileModal() {
+    if (!state.me) return;
+    $("#profileDisplayName").value = state.me.nickname;
+    $("#profileBio").value = state.me.bio || "";
+    $("#profileColor").value = state.me.avatarColor || userColor(state.me);
+    $("#profileError").textContent = "";
+    $("#profileModal").classList.remove("hidden");
+    $("#profileDisplayName").focus();
+  }
+
+  function closeProfileModal() {
+    $("#profileModal").classList.add("hidden");
+  }
+
+  function saveProfile() {
+    const displayName = $("#profileDisplayName").value.trim();
+    const bio = $("#profileBio").value;
+    const avatarColor = $("#profileColor").value;
+    $("#profileError").textContent = "";
+    state.socket.emit(
+      "profile:update",
+      { displayName, bio, avatarColor },
+      (resp) => {
+        if (!resp || !resp.ok) {
+          $("#profileError").textContent =
+            (resp && resp.error) || "저장에 실패했습니다.";
+          return;
+        }
+        state.me = Object.assign({}, state.me, resp.user);
+        if (state.me && state.me.isAnonymous) {
+          storeAnonNick(state.me.nickname);
+        }
+        renderMeBar();
+        closeProfileModal();
+      },
+    );
+  }
+
+  function resetProfileColor() {
+    $("#profileColor").value = colorFromName(
+      $("#profileDisplayName").value || "?",
+    );
+  }
+
+  // ===== Channel modal =====
+
+  function openChannelModal() {
+    $("#channelName").value = "";
+    $("#channelError").textContent = "";
+    document.querySelectorAll('input[name="channelType"]').forEach((r) => {
+      r.checked = r.value === "public";
+    });
+    refreshChannelMembersList();
+    updateChannelTypeUI();
+    $("#channelModal").classList.remove("hidden");
+    $("#channelName").focus();
+  }
+
+  function closeChannelModal() {
+    $("#channelModal").classList.add("hidden");
+  }
+
+  function updateChannelTypeUI() {
+    const type = document.querySelector(
+      'input[name="channelType"]:checked',
+    ).value;
+    $("#channelMembersLabel").classList.toggle("hidden", type !== "private");
+  }
+
+  function refreshChannelMembersList() {
+    const list = $("#channelMembersList");
+    list.innerHTML = "";
+    const all = collectAllAccountUsers();
+    if (all.length === 0) {
+      const note = document.createElement("div");
+      note.style.color = "var(--text-muted)";
+      note.style.fontSize = "12px";
+      note.style.padding = "6px";
+      note.textContent = "가입한 사용자가 없습니다.";
+      list.appendChild(note);
+      return;
+    }
+    all.forEach((u) => {
+      const label = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = u.username;
+      label.appendChild(cb);
+      const span = document.createElement("span");
+      span.textContent = u.displayName + (u.isAdmin ? " (관리자)" : "");
+      label.appendChild(span);
+      list.appendChild(label);
+    });
+  }
+
+  function collectAllAccountUsers() {
+    const map = new Map();
+    state.users.forEach((u) => {
+      if (u.username && !u.isAnonymous) {
+        map.set(u.username.toLowerCase(), {
+          username: u.username,
+          displayName: u.nickname,
+          isAdmin: u.isAdmin,
+        });
+      }
+    });
+    state.offlineUsers.forEach((a) => {
+      if (!map.has(a.username.toLowerCase())) {
+        map.set(a.username.toLowerCase(), {
+          username: a.username,
+          displayName: a.displayName,
+          isAdmin: a.isAdmin,
+        });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) =>
+      a.displayName.localeCompare(b.displayName),
+    );
+  }
+
+  function submitChannelCreate() {
+    const name = $("#channelName").value.trim();
+    const type = document.querySelector(
+      'input[name="channelType"]:checked',
+    ).value;
+    const allowedUsernames =
+      type === "private"
+        ? Array.from(
+            $("#channelMembersList").querySelectorAll(
+              "input[type=checkbox]:checked",
+            ),
+          ).map((cb) => cb.value)
+        : [];
+    $("#channelError").textContent = "";
+    state.socket.emit(
+      "admin:channel:create",
+      { name, type, allowedUsernames },
+      (resp) => {
+        if (!resp || !resp.ok) {
+          $("#channelError").textContent =
+            (resp && resp.error) || "생성에 실패했습니다.";
+          return;
+        }
+        closeChannelModal();
+        if (resp.channel) {
+          openChannel(resp.channel);
+        }
+      },
+    );
+  }
+
+  function deleteChannelClick(channel) {
+    if (!confirm("'" + channel.name + "' 채널을 삭제하시겠습니까? 메시지가 모두 사라집니다.")) return;
+    state.socket.emit(
+      "admin:channel:delete",
+      { channelId: channel.id },
+      (resp) => {
+        if (!resp || !resp.ok) {
+          alert("삭제 실패: " + ((resp && resp.error) || "알 수 없는 오류"));
+        }
+      },
+    );
+  }
+
+  // ===== Members management modal =====
+
+  function openMembersModal() {
+    if (state.activeView.kind !== "channel") return;
+    const channel = state.channels.find((c) => c.id === state.activeView.id);
+    if (!channel || channel.type !== "private") return;
+    $("#membersModalSub").textContent =
+      "'" + channel.name + "' 채널을 볼 수 있는 멤버를 선택하세요.";
+    $("#membersError").textContent = "";
+
+    const list = $("#membersListEdit");
+    list.innerHTML = "";
+    const allowedSet = new Set(
+      (channel.allowedUsernames || []).map((u) => u.toLowerCase()),
+    );
+    const all = collectAllAccountUsers();
+    if (all.length === 0) {
+      const note = document.createElement("div");
+      note.style.color = "var(--text-muted)";
+      note.style.fontSize = "12px";
+      note.style.padding = "6px";
+      note.textContent = "가입한 사용자가 없습니다.";
+      list.appendChild(note);
+    } else {
+      all.forEach((u) => {
+        const label = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = u.username;
+        cb.checked = allowedSet.has(u.username.toLowerCase());
+        label.appendChild(cb);
+        const span = document.createElement("span");
+        span.textContent = u.displayName + (u.isAdmin ? " (관리자)" : "");
+        label.appendChild(span);
+        list.appendChild(label);
+      });
+    }
+    $("#membersModal").classList.remove("hidden");
+  }
+
+  function closeMembersModal() {
+    $("#membersModal").classList.add("hidden");
+  }
+
+  function saveMembers() {
+    if (state.activeView.kind !== "channel") return;
+    const channelId = state.activeView.id;
+    const allowedUsernames = Array.from(
+      $("#membersListEdit").querySelectorAll("input[type=checkbox]:checked"),
+    ).map((cb) => cb.value);
+    state.socket.emit(
+      "admin:channel:members",
+      { channelId, allowedUsernames },
+      (resp) => {
+        if (!resp || !resp.ok) {
+          $("#membersError").textContent =
+            (resp && resp.error) || "저장 실패";
+          return;
+        }
+        closeMembersModal();
+      },
+    );
+  }
+
+  // ===== Rename modal =====
+
+  let renameTarget = null;
+  function openRenameModal(user) {
+    renameTarget = user;
+    $("#renameModalSub").textContent =
+      "'" + user.nickname + "' 님의 새 이름을 입력하세요.";
+    $("#renameInput").value = user.nickname;
+    $("#renameError").textContent = "";
+    $("#renameModal").classList.remove("hidden");
+    $("#renameInput").focus();
+    $("#renameInput").select();
+  }
+  function closeRenameModal() {
+    renameTarget = null;
+    $("#renameModal").classList.add("hidden");
+  }
+  function submitRename() {
+    if (!renameTarget) return;
+    const newName = $("#renameInput").value.trim();
+    state.socket.emit(
+      "admin:rename",
+      { targetId: renameTarget.id, newName },
+      (resp) => {
+        if (!resp || !resp.ok) {
+          $("#renameError").textContent =
+            (resp && resp.error) || "변경에 실패했습니다.";
+          return;
+        }
+        closeRenameModal();
+      },
+    );
+  }
+
+  // ===== Me bar =====
+
+  function renderMeBar() {
+    if (!state.me) return;
+    $("#meNick").textContent = state.me.nickname;
+    const meAv = $("#meAvatar");
+    meAv.textContent = initials(state.me.nickname);
+    meAv.style.background = userColor(state.me);
+    let status = state.me.isAuthenticated ? "로그인됨" : "익명";
+    if (state.me.isAdmin) status = "관리자";
+    if (state.me.mutedUntil && state.me.mutedUntil > Date.now()) {
+      const sec = Math.ceil((state.me.mutedUntil - Date.now()) / 1000);
+      status += " · 음소거(" + sec + "초)";
+    }
+    $("#meStatus").textContent = status;
+  }
+
+  function updateMuteBanner() {
+    const banner = $("#muteBanner");
+    if (!state.me || !state.me.mutedUntil || state.me.mutedUntil <= Date.now()) {
+      banner.classList.add("hidden");
+      if (state.muteTimer) {
+        clearInterval(state.muteTimer);
+        state.muteTimer = null;
+      }
+      return;
+    }
+    const tick = () => {
+      const remaining = state.me.mutedUntil - Date.now();
+      if (remaining <= 0) {
+        state.me.mutedUntil = 0;
+        banner.classList.add("hidden");
+        if (state.muteTimer) clearInterval(state.muteTimer);
+        state.muteTimer = null;
+        renderMeBar();
+        return;
+      }
+      const sec = Math.ceil(remaining / 1000);
+      banner.textContent =
+        "🔇 채팅이 차단되었습니다. " + sec + "초 후 다시 보낼 수 있어요.";
+    };
+    banner.classList.remove("hidden");
+    tick();
+    if (state.muteTimer) clearInterval(state.muteTimer);
+    state.muteTimer = setInterval(tick, 1000);
+  }
+
+  // ===== Socket =====
 
   function setupSocket() {
-    const socket = io({ autoConnect: true });
+    if (state.socket) return state.socket;
+    const socket = io({
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 800,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
+    });
     state.socket = socket;
 
-    socket.on("connect_error", (err) => {
-      $("#loginError").textContent = "서버 연결에 실패했습니다: " + err.message;
+    socket.on("connect", () => {
+      setBanner("");
+      // Re-register on reconnect
+      if (state.me) {
+        const token = getStoredToken();
+        const wasAuthenticated = state.me.isAuthenticated;
+        const payload = wasAuthenticated
+          ? { mode: "account", token }
+          : { mode: "anonymous", nickname: state.me.nickname };
+        socket.emit("register", payload, (resp) => {
+          if (!resp || !resp.ok) {
+            // Token may be expired — fall through to login screen
+            if (wasAuthenticated) {
+              storeToken(null);
+              logout();
+            }
+            return;
+          }
+          handleRegisterResponse(resp, wasAuthenticated);
+        });
+      }
     });
 
-    socket.on("users", (users) => {
+    socket.on("connect_error", (err) => {
+      $("#loginError").textContent =
+        "서버 연결에 실패했습니다: " + err.message;
+      if (state.me) {
+        setBanner("⚠ 서버에 연결하는 중...", "error");
+      }
+    });
+
+    socket.on("disconnect", (reason) => {
+      if (state.me) {
+        setBanner("⚠ 연결이 끊어졌습니다. 다시 연결 중... (" + reason + ")", "error");
+      }
+    });
+
+    socket.on("reconnect_attempt", () => {
+      if (state.me) setBanner("⚠ 다시 연결 중...", "error");
+    });
+
+    socket.on("users:online", (users) => {
       state.users = users;
+      // Update self info from server
+      if (state.me) {
+        const me = users.find((u) => u.id === state.me.id);
+        if (me) {
+          state.me = Object.assign({}, state.me, me);
+          renderMeBar();
+          updateMuteBanner();
+        }
+      }
       renderUsers();
+    });
+
+    socket.on("users:offline", (offline) => {
+      state.offlineUsers = offline;
+      renderUsers();
+    });
+
+    socket.on("channels:list", (channels) => {
+      state.channels = channels;
+      renderChannels();
+      // If currently viewing a channel that's no longer visible, drop to global
+      if (
+        state.activeView.kind === "channel" &&
+        !channels.find((c) => c.id === state.activeView.id)
+      ) {
+        openGlobal();
+      }
     });
 
     socket.on("system", (sys) => {
@@ -507,8 +1294,12 @@
         text: sys.text,
         timestamp: sys.timestamp,
       };
-      ensureBucket("global").push(item);
-      if (state.activeChannel.type === "global") {
+      const key = "ch:" + sys.channelId;
+      ensureBucket(key).push(item);
+      if (
+        state.activeView.kind === "channel" &&
+        state.activeView.id === sys.channelId
+      ) {
         const container = $("#messages");
         const empty = container.querySelector(".empty-state");
         if (empty) container.removeChild(empty);
@@ -517,32 +1308,37 @@
       }
     });
 
-    socket.on("message:public", (msg) => {
+    socket.on("message:channel", (msg) => {
       const isMe = state.me && msg.user.id === state.me.id;
       const item = {
-        kind: "public",
+        kind: "channel",
         id: msg.id,
+        channelId: msg.channelId,
         author: msg.user.nickname,
         authorId: msg.user.id,
         authorIsAdmin: !!msg.user.isAdmin,
+        authorColor: msg.user.avatarColor,
         text: msg.text,
         imageUrl: msg.imageUrl,
         timestamp: msg.timestamp,
       };
-      appendMessage("global", item);
+      const key = "ch:" + msg.channelId;
+      appendMessage(key, item);
 
+      const isViewing =
+        state.activeView.kind === "channel" &&
+        state.activeView.id === msg.channelId;
       if (!isMe) {
-        if (
-          state.activeChannel.type !== "global" ||
-          document.visibilityState !== "visible"
-        ) {
-          state.unread.global = (state.unread.global || 0) + 1;
+        if (!isViewing || document.visibilityState !== "visible") {
+          state.unread[key] = (state.unread[key] || 0) + 1;
+          renderChannels();
         }
         if (!msg.silent) {
+          const channel = state.channels.find((c) => c.id === msg.channelId);
           showBrowserNotification(
-            "#전체 채팅방 · " + msg.user.nickname,
+            "#" + ((channel && channel.name) || "채널") + " · " + msg.user.nickname,
             msg.text || "[이미지]",
-            { tag: "public", skipIfFocused: false },
+            { tag: key },
           );
         }
       }
@@ -562,23 +1358,24 @@
       appendMessage(key, item);
 
       const isViewing =
-        state.activeChannel.type === "dm" &&
-        state.activeChannel.id === msg.fromId;
+        state.activeView.kind === "dm" && state.activeView.id === msg.fromId;
       if (!isViewing || document.visibilityState !== "visible") {
         state.unread[key] = (state.unread[key] || 0) + 1;
         renderUsers();
       }
 
       if (!msg.silent) {
-        showBrowserNotification("DM · " + msg.fromNickname, msg.text || "[이미지]", {
-          tag: key,
-          skipIfFocused: false,
-        });
+        showBrowserNotification(
+          "DM · " + msg.fromNickname,
+          msg.text || "[이미지]",
+          { tag: key },
+        );
       }
     });
 
     socket.on("message:deleted", (info) => {
-      const bucket = ensureBucket("global");
+      const key = "ch:" + info.channelId;
+      const bucket = ensureBucket(key);
       const target = bucket.find((m) => m.id === info.id);
       if (target) {
         target.deleted = true;
@@ -586,7 +1383,10 @@
         target.text = "";
         target.imageUrl = undefined;
       }
-      if (state.activeChannel.type === "global") {
+      if (
+        state.activeView.kind === "channel" &&
+        state.activeView.id === info.channelId
+      ) {
         const node = $("#messages").querySelector(
           '[data-message-id="' + info.id + '"]',
         );
@@ -597,36 +1397,75 @@
       }
     });
 
-    socket.on("typing", ({ userId, nickname, isTyping }) => {
-      if (state.activeChannel.type !== "global") return;
+    socket.on("typing", (info) => {
+      if (state.activeView.kind !== "channel") return;
+      if (state.activeView.id !== info.channelId) return;
       const indicator = $("#typingIndicator");
-      const existing = state.typingTimers.get(userId);
+      const existing = state.typingTimers.get(info.userId);
       if (existing) clearTimeout(existing);
-      if (isTyping) {
-        indicator.textContent = nickname + " 님이 입력 중...";
+      if (info.isTyping) {
+        indicator.textContent = info.nickname + " 님이 입력 중...";
         state.typingTimers.set(
-          userId,
+          info.userId,
           setTimeout(() => {
             indicator.textContent = "";
-            state.typingTimers.delete(userId);
+            state.typingTimers.delete(info.userId);
           }, 2500),
         );
       } else {
         indicator.textContent = "";
-        state.typingTimers.delete(userId);
+        state.typingTimers.delete(info.userId);
       }
     });
 
-    socket.on("disconnect", () => {
-      $("#typingIndicator").textContent = "서버와의 연결이 끊어졌습니다.";
+    socket.on("forced:rename", (info) => {
+      if (!state.me) return;
+      state.me.nickname = info.newName;
+      renderMeBar();
+      alert("관리자(" + info.by + ")가 닉네임을 '" + info.newName + "'(으)로 변경했습니다.");
     });
+
+    socket.on("forced:mute", (info) => {
+      if (!state.me) return;
+      state.me.mutedUntil = info.until;
+      renderMeBar();
+      updateMuteBanner();
+    });
+
+    socket.on("forced:unmute", () => {
+      if (!state.me) return;
+      state.me.mutedUntil = 0;
+      renderMeBar();
+      updateMuteBanner();
+    });
+
+    socket.on("forced:kick", (info) => {
+      alert("관리자(" + info.by + ")에 의해 강퇴되었습니다.\n사유: " + (info.reason || "없음"));
+      hardLogout();
+    });
+
+    socket.on("forced:ban", (info) => {
+      alert("관리자(" + info.by + ")에 의해 영구 차단되었습니다.\n사유: " + (info.reason || "없음"));
+      storeToken(null);
+      hardLogout();
+    });
+
+    socket.on("forced:disconnect", (info) => {
+      alert(info.reason || "연결이 종료되었습니다.");
+    });
+
+    socket.on("forced:channel-removed", () => {
+      openGlobal();
+    });
+
+    return socket;
   }
 
   function ensureSocketReady() {
     if (!state.socket) setupSocket();
     if (state.socket.connected) return Promise.resolve();
     return new Promise((resolve) => {
-      const t = setTimeout(() => resolve(), 4000);
+      const t = setTimeout(() => resolve(), 5000);
       state.socket.once("connect", () => {
         clearTimeout(t);
         resolve();
@@ -674,7 +1513,10 @@
       state.pendingPreviewUrl = url;
       $("#imagePreviewImg").src = url;
       $("#imagePreviewName").textContent =
-        file.name + " (" + Math.round(file.size / 1024) + " KB)";
+        (file.name || "붙여넣은 이미지") +
+        " (" +
+        Math.round(file.size / 1024) +
+        " KB)";
       preview.classList.remove("hidden");
       attachBtn.classList.add("has-file");
     } else {
@@ -685,34 +1527,41 @@
     }
   }
 
+  function fileExtFromContentType(ct) {
+    if (!ct) return "png";
+    if (ct.includes("png")) return "png";
+    if (ct.includes("jpeg") || ct.includes("jpg")) return "jpg";
+    if (ct.includes("gif")) return "gif";
+    if (ct.includes("webp")) return "webp";
+    return "png";
+  }
+
   async function uploadPendingFile() {
     const file = state.pendingFile;
     if (!file) return null;
     if (file.size > MAX_UPLOAD_SIZE) {
       throw new Error("파일이 너무 큽니다 (10MB 이하)");
     }
+    const name =
+      file.name && file.name.trim()
+        ? file.name
+        : "paste-" + Date.now() + "." + fileExtFromContentType(file.type);
 
     const reqRes = await apiPost("/api/storage/uploads/request-url", {
-      name: file.name,
+      name,
       size: file.size,
       contentType: file.type,
     });
-    if (!reqRes.ok && reqRes.error) {
-      throw new Error(reqRes.error);
-    }
+    if (!reqRes.ok && reqRes.error) throw new Error(reqRes.error);
     const { uploadURL, objectPath } = reqRes;
-    if (!uploadURL || !objectPath) {
-      throw new Error("업로드 URL을 받지 못했습니다.");
-    }
+    if (!uploadURL || !objectPath) throw new Error("업로드 URL을 받지 못했습니다.");
 
     const putRes = await fetch(uploadURL, {
       method: "PUT",
       headers: { "Content-Type": file.type },
       body: file,
     });
-    if (!putRes.ok) {
-      throw new Error("파일 업로드 실패 (" + putRes.status + ")");
-    }
+    if (!putRes.ok) throw new Error("파일 업로드 실패 (" + putRes.status + ")");
     return objectPath;
   }
 
@@ -721,39 +1570,32 @@
   async function send(text) {
     const hasFile = !!state.pendingFile;
     if (!text.trim() && !hasFile) return;
-
     const sendBtn = $("#messageForm .send-btn");
     sendBtn.disabled = true;
-
     let imageUrl;
     try {
-      if (hasFile) {
-        imageUrl = await uploadPendingFile();
-      }
+      if (hasFile) imageUrl = await uploadPendingFile();
     } catch (err) {
       alert("이미지 업로드 실패: " + (err.message || err));
       sendBtn.disabled = false;
       return;
     }
-
     const silent = state.silentMode;
 
-    if (state.activeChannel.type === "global") {
+    if (state.activeView.kind === "channel") {
       state.socket.emit(
-        "message:public",
-        { text, imageUrl, silent },
+        "message:channel",
+        { channelId: state.activeView.id, text, imageUrl, silent },
         (resp) => {
           sendBtn.disabled = false;
-          if (resp && resp.ok) {
-            setPendingFile(null);
-          } else {
+          if (resp && resp.ok) setPendingFile(null);
+          else
             alert("전송 실패: " + ((resp && resp.error) || "알 수 없는 오류"));
-          }
         },
       );
     } else {
-      const targetId = state.activeChannel.id;
-      const targetName = state.activeChannel.name;
+      const targetId = state.activeView.id;
+      const targetName = state.activeView.name;
       state.socket.emit(
         "message:private",
         { toId: targetId, text, imageUrl, silent },
@@ -765,6 +1607,7 @@
               id: resp.message ? resp.message.id : undefined,
               author: state.me.nickname,
               authorId: state.me.id,
+              authorColor: state.me.avatarColor,
               text,
               imageUrl,
               timestamp: Date.now(),
@@ -773,8 +1616,7 @@
             setPendingFile(null);
           } else {
             alert(
-              "DM 전송에 실패했습니다: " +
-                ((resp && resp.error) || "알 수 없는 오류"),
+              "DM 전송 실패: " + ((resp && resp.error) || "알 수 없는 오류"),
             );
             if (!state.users.find((u) => u.id === targetId)) {
               alert(targetName + " 님이 오프라인입니다.");
@@ -786,64 +1628,128 @@
     }
   }
 
-  function deleteMessage(messageId) {
+  function deleteMessage(messageId, channelId) {
     if (!confirm("이 메시지를 삭제하시겠습니까?")) return;
-    state.socket.emit("message:delete", { messageId }, (resp) => {
-      if (!resp || !resp.ok) {
-        alert("삭제 실패: " + ((resp && resp.error) || "알 수 없는 오류"));
-      }
-    });
+    state.socket.emit(
+      "message:delete",
+      { messageId, channelId },
+      (resp) => {
+        if (!resp || !resp.ok) {
+          alert("삭제 실패: " + ((resp && resp.error) || "알 수 없는 오류"));
+        }
+      },
+    );
   }
 
-  // ===== Entry flows =====
+  // ===== Entry =====
 
   async function enterAsAccount(token) {
     await ensureSocketReady();
     return socketRegister({ mode: "account", token });
   }
-
-  async function enterAsAnonymous() {
+  async function enterAsAnonymous(nickname) {
     await ensureSocketReady();
-    return socketRegister({ mode: "anonymous" });
+    return socketRegister({ mode: "anonymous", nickname });
   }
 
-  function showApp(resp, isAuthenticated) {
+  function handleRegisterResponse(resp, isAuthenticated) {
     state.me = resp.user;
     state.users = resp.users || [];
-    loadHistory(resp.history || []);
+    state.offlineUsers = resp.offlineUsers || [];
+    state.channels = resp.channels || [];
+    loadHistoryInto("ch:" + (resp.activeChannelId || "global"), resp.history || []);
+    state.activeView = {
+      kind: "channel",
+      id: resp.activeChannelId || "global",
+      name:
+        (state.channels.find((c) => c.id === resp.activeChannelId) || {}).name ||
+        "전체 채팅방",
+    };
 
-    $("#meNick").textContent = state.me.nickname;
-    const meAv = $("#meAvatar");
-    meAv.textContent = initials(state.me.nickname);
-    meAv.style.background = colorFromName(state.me.nickname);
-    let status = isAuthenticated ? "로그인됨" : "익명";
-    if (state.me.isAdmin) status = "관리자";
-    $("#meStatus").textContent = status;
+    renderMeBar();
+    renderChannels();
+    renderChannelHeader();
+    renderUsers();
+    renderMessages();
+    updateMuteBanner();
 
+    $("#addChannelBtn").classList.toggle(
+      "hidden",
+      !(state.me && state.me.isAdmin),
+    );
     $("#loginOverlay").classList.add("hidden");
     $("#app").classList.remove("hidden");
 
-    openGlobal();
+    if (state.me && state.me.isAnonymous) {
+      storeAnonNick(state.me.nickname);
+    }
   }
 
-  function logout() {
+  async function logout() {
+    const token = getStoredToken();
+    if (token) {
+      try {
+        await apiPost("/api/auth/logout", { token });
+      } catch (_) {}
+    }
     storeToken(null);
+    hardLogout();
+  }
+
+  function hardLogout() {
     if (state.socket) {
       try {
         state.socket.disconnect();
-      } catch (_) {
-        // ignore
-      }
+      } catch (_) {}
       state.socket = null;
     }
     state.me = null;
     state.users = [];
-    state.messages = { global: [] };
+    state.offlineUsers = [];
+    state.channels = [];
+    state.messages = {};
     state.unread = {};
+    if (state.muteTimer) clearInterval(state.muteTimer);
     setPendingFile(null);
+    $("#muteBanner").classList.add("hidden");
+    setBanner("");
     $("#app").classList.add("hidden");
     $("#loginOverlay").classList.remove("hidden");
     $("#loginError").textContent = "";
+  }
+
+  // ===== Visibility / network reconnect =====
+
+  function setupConnectionWatchers() {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      if (state.socket && !state.socket.connected) {
+        try {
+          state.socket.connect();
+        } catch (_) {}
+      }
+      // Force a quick keepalive to detect dead connections faster
+      if (state.socket && state.socket.connected) {
+        state.socket.timeout(3000).emit("ping:keepalive", null, (err) => {
+          if (err) {
+            try {
+              state.socket.disconnect();
+              state.socket.connect();
+            } catch (_) {}
+          }
+        });
+      }
+    });
+    window.addEventListener("online", () => {
+      if (state.socket && !state.socket.connected) {
+        try {
+          state.socket.connect();
+        } catch (_) {}
+      }
+    });
+    window.addEventListener("offline", () => {
+      if (state.me) setBanner("⚠ 인터넷 연결 끊김", "error");
+    });
   }
 
   // ===== Wiring =====
@@ -863,17 +1769,86 @@
     });
   }
 
+  function handlePastedImageFromEvent(e) {
+    if (!e.clipboardData) return false;
+    const items = e.clipboardData.items;
+    if (!items) return false;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (!file) continue;
+        if (file.size > MAX_UPLOAD_SIZE) {
+          alert("파일 크기는 10MB 이하여야 합니다.");
+          continue;
+        }
+        e.preventDefault();
+        setPendingFile(file);
+        return true;
+      }
+    }
+    return false;
+  }
+
   function bindUi() {
     loadPrefs();
     updateNotifyButton();
     updateSilentButton();
     bindAuthTabs();
+    setupConnectionWatchers();
 
     $("#notifyToggle").addEventListener("click", toggleNotifications);
     $("#silentToggle").addEventListener("click", toggleSilent);
     $("#leaveDmBtn").addEventListener("click", openGlobal);
-    $("#channelGlobal").addEventListener("click", openGlobal);
-    $("#logoutBtn").addEventListener("click", logout);
+    $("#logoutBtn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      logout();
+    });
+    $("#meBar").addEventListener("click", openProfileModal);
+
+    $("#addChannelBtn").addEventListener("click", openChannelModal);
+    $("#manageMembersBtn").addEventListener("click", openMembersModal);
+
+    // Profile modal
+    $("#profileCancel").addEventListener("click", closeProfileModal);
+    $("#profileSave").addEventListener("click", saveProfile);
+    $("#profileColorReset").addEventListener("click", resetProfileColor);
+    $("#profileModal").addEventListener("click", (e) => {
+      if (e.target === $("#profileModal")) closeProfileModal();
+    });
+
+    // Channel modal
+    $("#channelCancel").addEventListener("click", closeChannelModal);
+    $("#channelSave").addEventListener("click", submitChannelCreate);
+    document.querySelectorAll('input[name="channelType"]').forEach((r) => {
+      r.addEventListener("change", updateChannelTypeUI);
+    });
+    $("#channelModal").addEventListener("click", (e) => {
+      if (e.target === $("#channelModal")) closeChannelModal();
+    });
+
+    // Members modal
+    $("#membersCancel").addEventListener("click", closeMembersModal);
+    $("#membersSave").addEventListener("click", saveMembers);
+    $("#membersModal").addEventListener("click", (e) => {
+      if (e.target === $("#membersModal")) closeMembersModal();
+    });
+
+    // Rename modal
+    $("#renameCancel").addEventListener("click", closeRenameModal);
+    $("#renameSave").addEventListener("click", submitRename);
+    $("#renameModal").addEventListener("click", (e) => {
+      if (e.target === $("#renameModal")) closeRenameModal();
+    });
+
+    // Popover close on outside click
+    document.addEventListener("click", (e) => {
+      const pop = $("#userPopover");
+      if (pop.classList.contains("hidden")) return;
+      if (pop.contains(e.target)) return;
+      closePopover();
+    });
+    $("#popoverClose").addEventListener("click", closePopover);
 
     const loginErr = $("#loginError");
 
@@ -897,7 +1872,7 @@
         loginErr.textContent = (reg && reg.error) || "입장 실패";
         return;
       }
-      showApp(reg, true);
+      handleRegisterResponse(reg, true);
     });
 
     $("#registerForm").addEventListener("submit", async (e) => {
@@ -921,17 +1896,18 @@
         loginErr.textContent = (reg && reg.error) || "입장 실패";
         return;
       }
-      showApp(reg, true);
+      handleRegisterResponse(reg, true);
     });
 
     $("#anonymousBtn").addEventListener("click", async () => {
       loginErr.textContent = "";
-      const reg = await enterAsAnonymous();
+      const savedNick = getStoredAnonNick();
+      const reg = await enterAsAnonymous(savedNick || undefined);
       if (!reg || !reg.ok) {
         loginErr.textContent = (reg && reg.error) || "입장 실패";
         return;
       }
-      showApp(reg, false);
+      handleRegisterResponse(reg, false);
     });
 
     // File picker
@@ -947,11 +1923,8 @@
       setPendingFile(file);
       e.target.value = "";
     });
-    $("#imagePreviewRemove").addEventListener("click", () => {
-      setPendingFile(null);
-    });
+    $("#imagePreviewRemove").addEventListener("click", () => setPendingFile(null));
 
-    // Composer
     const messageForm = $("#messageForm");
     const messageInput = $("#messageInput");
 
@@ -959,17 +1932,55 @@
     let typingDebounce = null;
 
     messageInput.addEventListener("input", () => {
-      if (state.activeChannel.type !== "global" || !state.socket) return;
+      if (state.activeView.kind !== "channel" || !state.socket) return;
       if (!typingSent) {
-        state.socket.emit("typing", { isTyping: true });
+        state.socket.emit("typing", {
+          isTyping: true,
+          channelId: state.activeView.id,
+        });
         typingSent = true;
       }
       clearTimeout(typingDebounce);
       typingDebounce = setTimeout(() => {
-        state.socket.emit("typing", { isTyping: false });
+        state.socket.emit("typing", {
+          isTyping: false,
+          channelId: state.activeView.id,
+        });
         typingSent = false;
       }, 1500);
     });
+
+    // Paste image (Ctrl+V) anywhere in the chat area
+    document.addEventListener("paste", (e) => {
+      // Only when app is visible
+      if ($("#app").classList.contains("hidden")) return;
+      handlePastedImageFromEvent(e);
+    });
+
+    // Drag & drop image into composer area
+    const dropZone = $(".chat-area");
+    if (dropZone) {
+      dropZone.addEventListener("dragover", (e) => {
+        if (e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files")) {
+          e.preventDefault();
+        }
+      });
+      dropZone.addEventListener("drop", (e) => {
+        if (!e.dataTransfer) return;
+        const file =
+          e.dataTransfer.files && e.dataTransfer.files[0]
+            ? e.dataTransfer.files[0]
+            : null;
+        if (file && file.type.startsWith("image/")) {
+          e.preventDefault();
+          if (file.size > MAX_UPLOAD_SIZE) {
+            alert("파일 크기는 10MB 이하여야 합니다.");
+            return;
+          }
+          setPendingFile(file);
+        }
+      });
+    }
 
     messageForm.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -978,7 +1989,10 @@
       send(text);
       messageInput.value = "";
       if (typingSent && state.socket) {
-        state.socket.emit("typing", { isTyping: false });
+        state.socket.emit("typing", {
+          isTyping: false,
+          channelId: state.activeView.id,
+        });
         typingSent = false;
         clearTimeout(typingDebounce);
       }
@@ -986,16 +2000,18 @@
 
     setupSocket();
 
+    // Auto-login
+    state.autoLoginAttempted = true;
     const token = getStoredToken();
     if (token) {
       enterAsAccount(token).then((reg) => {
-        if (reg && reg.ok) {
-          showApp(reg, true);
-        } else {
-          storeToken(null);
-        }
+        if (reg && reg.ok) handleRegisterResponse(reg, true);
+        else storeToken(null);
       });
     }
+
+    // Reposition popover on resize
+    window.addEventListener("resize", closePopover);
   }
 
   document.addEventListener("DOMContentLoaded", bindUi);

@@ -30,7 +30,6 @@
           </button>
         </div>
 
-        <!-- Login -->
         <form id="loginForm" class="auth-pane active" data-pane="login">
           <input
             type="text"
@@ -49,7 +48,6 @@
           <button type="submit" class="primary">로그인</button>
         </form>
 
-        <!-- Register -->
         <form id="registerForm" class="auth-pane" data-pane="register">
           <input
             type="text"
@@ -75,7 +73,6 @@
           <button type="submit" class="primary">회원가입 후 입장</button>
         </form>
 
-        <!-- Anonymous -->
         <div class="auth-pane" data-pane="anon">
           <p class="anon-note">
             익명으로 입장하면 닉네임이 IP 주소를 기반으로 자동 생성돼요.
@@ -91,9 +88,11 @@
       </div>
     </div>
 
+    <!-- Connection status banner -->
+    <div id="connBanner" class="conn-banner hidden"></div>
+
     <!-- Main app -->
     <div id="app" class="app hidden">
-      <!-- Sidebar -->
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="brand">
@@ -103,15 +102,17 @@
         </div>
 
         <div class="channel-section">
-          <div class="section-title">채널</div>
-          <div
-            id="channelGlobal"
-            class="channel-item active"
-            data-channel="global"
-          >
-            <span class="hash">#</span>
-            <span>전체 채팅방</span>
+          <div class="section-title">
+            채널
+            <button
+              id="addChannelBtn"
+              class="section-btn hidden"
+              title="채널 추가"
+            >
+              +
+            </button>
           </div>
+          <div id="channelList" class="channel-list"></div>
         </div>
 
         <div class="channel-section users-section">
@@ -119,9 +120,13 @@
             온라인 — <span id="userCount">0</span>
           </div>
           <div id="userList" class="user-list"></div>
+          <div class="section-title section-title-sub">
+            오프라인 — <span id="offlineCount">0</span>
+          </div>
+          <div id="offlineList" class="user-list"></div>
         </div>
 
-        <div class="me-bar">
+        <div class="me-bar" id="meBar" title="클릭해서 프로필 편집">
           <div class="me-avatar" id="meAvatar">?</div>
           <div class="me-info">
             <div class="me-nick" id="meNick">-</div>
@@ -133,7 +138,6 @@
         </div>
       </aside>
 
-      <!-- Main chat area -->
       <main class="chat-area">
         <header class="chat-header">
           <div class="chat-title">
@@ -142,6 +146,13 @@
             <span id="chatSubtitle" class="chat-subtitle"></span>
           </div>
           <div class="chat-actions">
+            <button
+              id="manageMembersBtn"
+              class="action-btn hidden"
+              title="비공개 채널 멤버 관리"
+            >
+              👥 멤버
+            </button>
             <button
               id="silentToggle"
               class="action-btn"
@@ -168,6 +179,8 @@
 
         <div id="typingIndicator" class="typing-indicator"></div>
 
+        <div id="muteBanner" class="mute-banner hidden"></div>
+
         <div id="imagePreview" class="image-preview hidden">
           <img id="imagePreviewImg" alt="첨부 이미지 미리보기" />
           <div class="image-preview-meta">
@@ -183,7 +196,7 @@
             type="button"
             id="attachBtn"
             class="attach-btn"
-            title="이미지 첨부 (PNG/JPG/GIF/WebP, 최대 10MB)"
+            title="이미지 첨부 (PNG/JPG/GIF/WebP, 최대 10MB) — Ctrl+V로 붙여넣기 가능"
           >
             📎
           </button>
@@ -196,13 +209,126 @@
           <input
             type="text"
             id="messageInput"
-            placeholder="메시지를 입력하세요..."
+            placeholder="메시지를 입력하세요... (Ctrl+V로 이미지 붙여넣기)"
             autocomplete="off"
             maxlength="2000"
           />
           <button type="submit" class="send-btn">전송</button>
         </form>
       </main>
+    </div>
+
+    <!-- User popover (click any user) -->
+    <div id="userPopover" class="popover hidden">
+      <div class="popover-header">
+        <div class="popover-avatar" id="popoverAvatar">?</div>
+        <div>
+          <div class="popover-name" id="popoverName"></div>
+          <div class="popover-status" id="popoverStatus"></div>
+        </div>
+        <button class="popover-close" id="popoverClose">✕</button>
+      </div>
+      <div class="popover-bio" id="popoverBio"></div>
+      <div class="popover-actions" id="popoverActions"></div>
+    </div>
+
+    <!-- Profile editor modal -->
+    <div id="profileModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <h3>프로필 편집</h3>
+        <label>표시 이름
+          <input type="text" id="profileDisplayName" maxlength="24" />
+        </label>
+        <label>프로필 카드 (소개)
+          <textarea
+            id="profileBio"
+            maxlength="200"
+            rows="3"
+            placeholder="자신을 소개하는 한 줄을 적어보세요"
+          ></textarea>
+        </label>
+        <label>아바타 색상
+          <div class="color-row">
+            <input type="color" id="profileColor" value="#5865f2" />
+            <button type="button" class="ghost-btn" id="profileColorReset">
+              자동
+            </button>
+          </div>
+        </label>
+        <div class="modal-error" id="profileError"></div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-btn" id="profileCancel">취소</button>
+          <button type="button" class="primary" id="profileSave">저장</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create channel modal -->
+    <div id="channelModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <h3 id="channelModalTitle">새 채널 만들기</h3>
+        <label>채널 이름
+          <input
+            type="text"
+            id="channelName"
+            maxlength="30"
+            placeholder="예: 공지, 친구방"
+          />
+        </label>
+        <label>채널 종류
+          <div class="radio-row">
+            <label class="radio">
+              <input
+                type="radio"
+                name="channelType"
+                value="public"
+                checked
+              />
+              공개 (모두 볼 수 있음)
+            </label>
+            <label class="radio">
+              <input type="radio" name="channelType" value="private" />
+              비공개 (허용한 사람만)
+            </label>
+          </div>
+        </label>
+        <label id="channelMembersLabel" class="hidden">허용할 멤버
+          <div id="channelMembersList" class="members-list"></div>
+        </label>
+        <div class="modal-error" id="channelError"></div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-btn" id="channelCancel">취소</button>
+          <button type="button" class="primary" id="channelSave">만들기</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manage private channel members modal -->
+    <div id="membersModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <h3>멤버 관리</h3>
+        <p class="modal-sub" id="membersModalSub"></p>
+        <div id="membersListEdit" class="members-list"></div>
+        <div class="modal-error" id="membersError"></div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-btn" id="membersCancel">취소</button>
+          <button type="button" class="primary" id="membersSave">저장</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Admin force-rename modal -->
+    <div id="renameModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <h3>닉네임 강제 변경</h3>
+        <p class="modal-sub" id="renameModalSub"></p>
+        <input type="text" id="renameInput" maxlength="24" />
+        <div class="modal-error" id="renameError"></div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-btn" id="renameCancel">취소</button>
+          <button type="button" class="primary" id="renameSave">변경</button>
+        </div>
+      </div>
     </div>
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO" crossorigin="anonymous"></script>
